@@ -63,14 +63,17 @@ class City(j: JSONObject) {
     val wiki = j.getJSONObject("wiki").strMap()
     /** Built guides made before the check for events ("Council of …") may still list them: they're left out here. */
     private fun visitable(p: Place) = !generated || p.kinds.isNotEmpty() || !notAPlace(wiki[p.id] ?: p.name, p.desc.removeSuffix("."))
+    /** Built guides list sights best first; the same sight under two names is kept once (also for guides built earlier). */
+    private val extraAll = j.getJSONArray("extra").objects().map(::place).filter(::visitable)
+    private val extra = if (generated) dedupeSights(extraAll, { wiki[it.id]?.replace('_', ' ') ?: it.name }, { it.lat }, { it.lng }) else extraAll
+    private val dropped = (extraAll - extra.toSet()).map { it.id }.toSet()
     val themes = j.getJSONArray("themes").objects().map { t ->
-        Theme(t.getString("key"), t.getString("name"), t.getString("blurb"), t.getJSONArray("stops").objects().map(::place).filter(::visitable))
+        Theme(t.getString("key"), t.getString("name"), t.getString("blurb"), t.getJSONArray("stops").objects().map(::place).filter { visitable(it) && it.id !in dropped })
     }.filter { it.stops.isNotEmpty() }
     val themeMap = themes.associateBy { it.key }
     /** Only theme keys that really exist, so screens can look them up without crashing. */
     val themeOrder = j.getJSONArray("themeOrder").strings().filter { it in themeMap }.ifEmpty { themes.map { it.key } }
     val defOrder = j.getJSONArray("defOrder").strings().filter { it in themeMap }.ifEmpty { themeOrder }
-    private val extra = j.getJSONArray("extra").objects().map(::place).filter(::visitable)
     val food = j.getJSONArray("food").objects().map(::place)
     val cost: Map<String, Cost> = j.getJSONObject("cost").let { o ->
         o.keys().asSequence().associateWith { k ->

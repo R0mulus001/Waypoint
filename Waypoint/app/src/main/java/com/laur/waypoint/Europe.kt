@@ -123,7 +123,11 @@ suspend fun searchCities(country: Country, q: String): List<SearchHit> = withCon
     List(a.length()) { a.getJSONObject(it) }.map { o ->
         val dn = o.optString("display_name")
         SearchHit(o.optString("name").ifBlank { dn.substringBefore(",") }, dn.substringAfter(", ", "").take(80), o.getDouble("lat"), o.getDouble("lon"))
-    }.distinctBy { Triple(it.name, it.lat, it.lng) } // same name and spot twice would also crash the result list
+    }.fold(ArrayList<SearchHit>()) { acc, h ->
+        // OpenStreetMap often returns a town twice: the town itself and its municipality or county, a few km apart.
+        // Same name within 25 km = the same town; the first (more important) one stays. Also stops duplicate list keys.
+        if (acc.none { it.name.equals(h.name, ignoreCase = true) && km(it.lat, it.lng, h.lat, h.lng) < 25 }) acc.add(h); acc
+    }
 }
 
 /** Writes a file in one go (temp file, then rename), so a killed app never leaves half a guide behind. */
@@ -176,7 +180,32 @@ private val eventTitle = Regex("^(the )?(congress|council|concordat|conference|t
     "plague|riots?|uprising|revolution|massacre|bombing|negotiations|talks|award|protocol|charter|edict|decree|statute)s? of\\b",
     RegexOption.IGNORE_CASE)
 private val eventDesc = Regex("ecumenical|church council|\\bsynod\\b|\\bconcordat\\b|\\bagreement\\b|\\baccord\\b|\\bcongress\\b(?! cent)|" +
-    "\\bconference\\b(?! cent| hall| venue)|negotiations|peace talks|\\bpact\\b", RegexOption.IGNORE_CASE)
+    "\\bconference\\b(?! cent| hall| venue)|negotiations|peace talks|\\bpact\\b|\\blegislature\\b|legislative body", RegexOption.IGNORE_CASE)
+
+/**
+ * The same sight under two names: an English and a local article ("St. Stephen's Cathedral" and "Stephansdom"),
+ * or a building and the institution in it ("Austrian Parliament Building" and "Parliament of Austria").
+ * Two places count as one when they're within 150 m and share the start of a distinctive word
+ * (stephen/stephansdom, parliament/parlament). Type words (cathedral, museum, palace…) don't count.
+ */
+private val typeWords = setOf("cathedral", "church", "basilica", "chapel", "palace", "castle", "museum", "gallery", "square", "street",
+    "house", "building", "theatre", "theater", "opera", "garden", "gardens", "park", "bridge", "tower", "gate", "monument", "memorial",
+    "statue", "fountain", "column", "market", "hall", "library", "abbey", "monastery", "synagogue", "mosque", "national", "imperial",
+    "royal", "saint", "state", "city", "central", "great", "grand", "former", "vienna", "wien", "austria", "austrian", "german", "italian",
+    "polish", "romanian", "french", "spanish", "museo", "museum's", "palais", "palazzo", "chiesa", "kirche", "platz", "piazza", "schloss",
+    "biserica", "catedrala", "muzeul", "palatul", "parcul", "strada", "plaza", "iglesia", "eglise", "musee", "place")
+private fun stems(name: String): Set<String> = slug(name.substringBefore(" (")).split(Regex("[^a-z0-9]+"))
+    .filter { it.length >= 5 && it !in typeWords }.map { it.take(4) }.toSet()
+
+fun sameSight(aName: String, aLat: Double, aLng: Double, bName: String, bLat: Double, bLng: Double): Boolean =
+    km(aLat, aLng, bLat, bLng) <= 0.15 && stems(aName).intersect(stems(bName)).isNotEmpty()
+
+/** Keeps the first of each group of [sameSight]s (lists are best first, so the better-known name stays). */
+fun <T> dedupeSights(items: List<T>, name: (T) -> String, lat: (T) -> Double, lng: (T) -> Double): List<T> {
+    val kept = ArrayList<T>()
+    items.forEach { x -> if (kept.none { sameSight(name(it), lat(it), lng(it), name(x), lat(x), lng(x)) }) kept.add(x) }
+    return kept
+}
 
 fun notAPlace(title: String, desc: String = ""): Boolean = eventTitle.containsMatchIn(title.replace('_', ' ')) || eventDesc.containsMatchIn(desc)
 
@@ -301,7 +330,7 @@ class GuideBuilder(private val ctx: Context) {
                 out.add(Sight(gs.getLong("pageid"), title, gs.getDouble("lat"), gs.getDouble("lon"), desc, views, cat, outdoor))
             }
         }
-        return out.filter { it.views > 0 }.sortedByDescending { it.views }
+        return dedupeSights(out.filter { it.views > 0 }.sortedByDescending { it.views }, { it.title }, { it.lat }, { it.lng })
     }
 
     private val overpassServers = listOf(
