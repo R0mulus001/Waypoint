@@ -1,0 +1,59 @@
+name: Build Waypoint APK
+on:
+  push:
+    paths: ["Waypoint/**", .github/workflows/build.yml]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: waypoint-build
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch fonts from Google Fonts
+        working-directory: Waypoint
+        run: |
+          mkdir -p app/src/main/res/font
+          get() {
+            url=$(curl -fsSL "https://fonts.googleapis.com/css2?family=$1" | grep -o "https://[^)]*" | head -1) || return 0
+            out="app/src/main/res/font/$2.ttf"
+            curl -fsSL "$url" -o "$out" || { rm -f "$out"; return 0; }
+            magic=$(head -c4 "$out" | od -An -tx1 | tr -d ' \n')
+            case "$magic" in 00010000|74727565|4f54544f) echo "$2 ok";; *) echo "$2 not a TTF ($magic), skipped"; rm -f "$out";; esac
+          }
+          get "Fraunces:wght@600" fraunces_600
+          get "Work+Sans:wght@400" worksans_400
+          get "Work+Sans:wght@500" worksans_500
+          get "Work+Sans:wght@600" worksans_600
+          ls -la app/src/main/res/font
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+      - name: Check signing secret (prints only length + short fingerprint)
+        env:
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        run: |
+          t=$(printf '%s' "$SIGNING_PASSWORD" | tr -d '[:space:]')
+          echo "raw length: ${#SIGNING_PASSWORD}, trimmed length: ${#t} (expected 32)"
+          echo "fingerprint: $(printf '%s' "$t" | sha256sum | cut -c1-8) (expected 2c7cdfc4)"
+      - name: Build signed release APK
+        run: |
+          gradle assembleRelease --stacktrace
+          cp app/build/outputs/apk/release/app-release.apk ../Waypoint.apk
+        working-directory: Waypoint
+        env:
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Waypoint (latest)
+          files: Waypoint.apk
+          overwrite_files: true
+          make_latest: true
