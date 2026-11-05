@@ -40,6 +40,8 @@ class City(j: JSONObject) {
     val generated = j.optBoolean("generated")
     val name = j.getString("name")
     val country = j.getString("country")
+    /** Two-letter code (built guides save it); empty for guides without one. */
+    val countryCode: String = j.optString("countryCode").uppercase()
     val tagline = j.getString("tagline")
     val tz = j.getString("tz")
     val cur = j.getString("cur")

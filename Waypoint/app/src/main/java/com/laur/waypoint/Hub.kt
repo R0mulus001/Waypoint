@@ -83,22 +83,20 @@ sealed class Screen {
     data class Build(val code: String, val name: String, val wiki: String?, val at: Pair<Double, Double>?) : Screen()
 }
 
-private const val HUB_BAR = 0xFF1A4FA0
-
 @Composable
 fun WaypointApp(
     stores: CityStores, gps: LatLng?, locationOn: Boolean,
-    requestLocation: () -> Unit, openUrl: (String) -> Unit, setBarColor: (Long) -> Unit,
+    requestLocation: () -> Unit, openUrl: (String) -> Unit, setDarkBars: (Boolean) -> Unit,
 ) {
     val sysDark = isSystemInDarkTheme()
     val dark = when (Hub.themeMode) { "light" -> false; "dark" -> true; else -> sysDark }
     val city = stores.find(Hub.city)?.takeIf { Hub.onboarded }
     if (city != null) Trip.city = city
     val pal = palFor(city, dark)
-    SideEffect { setBarColor(city?.accent?.bar ?: HUB_BAR) }
+    SideEffect { setDarkBars(dark) }
     var screen by remember { mutableStateOf<Screen>(Screen.Home) }
 
-    MaterialTheme(colorScheme = if (dark) darkColorScheme() else lightColorScheme()) {
+    MaterialTheme(colorScheme = schemeFor(pal)) {
         CompositionLocalProvider(LocalPal provides pal) {
             when {
                 !Hub.onboarded -> HubWelcome(locationOn, requestLocation)

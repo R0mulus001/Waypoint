@@ -52,6 +52,8 @@ object Europe {
         countries = List(a.length()) { Country(a.getJSONObject(it)) }.sortedBy { it.name }
     }
     fun byCode(c: String) = countries.firstOrNull { it.code == c }
+    /** The country a city guide belongs to (by its code, or by name for guides without one). */
+    fun forCity(c: City): Country? = byCode(c.countryCode) ?: countries.firstOrNull { it.name == c.country }
 }
 
 fun slug(s: String) = Normalizer.normalize(s, Normalizer.Form.NFD).replace(Regex("\\p{M}+"), "").replace("ł", "l").lowercase()

@@ -12,6 +12,8 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.mutableStateOf
@@ -64,6 +66,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        bars(false)
         Fonts.init(this)
         Europe.load(applicationContext)
         Hub.init(applicationContext)
@@ -73,7 +76,18 @@ class MainActivity : ComponentActivity() {
         lm = getSystemService(LOCATION_SERVICE) as LocationManager
         locationOn.value = locationUsable()
         // Location is asked for in the welcome screens (with an explanation), not as a bare popup at launch.
-        setContent { WaypointApp(stores, gps.value, locationOn.value, ::requestLocation, ::openUrl) { window.statusBarColor = it.toInt() } }
+        setContent { WaypointApp(stores, gps.value, locationOn.value, ::requestLocation, ::openUrl, ::bars) }
+    }
+
+    private var barsDark: Boolean? = null
+
+    /** Edge to edge: the app draws behind transparent system bars, whose icons follow the app's light or dark look. */
+    private fun bars(dark: Boolean) {
+        if (barsDark == dark) return
+        barsDark = dark
+        val t = android.graphics.Color.TRANSPARENT
+        val style = if (dark) SystemBarStyle.dark(t) else SystemBarStyle.light(t, t)
+        enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
     }
 
     override fun onStart() { super.onStart(); locationOn.value = locationUsable(); startLocation() }
