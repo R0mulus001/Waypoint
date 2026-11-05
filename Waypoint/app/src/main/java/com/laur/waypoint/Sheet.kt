@@ -66,7 +66,7 @@ import java.io.File
 /** A place, in Material's bottom sheet: drag handle, swipe down or back to close, scrim tap to close. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PlaceSheet(ui: Ui, p: Place, here: LatLng?) {
+fun PlaceSheet(ui: Ui, p: Place, here: LatLng?, hereFrom: String? = null) {
     val c = LocalPal.current
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val maxH = (LocalConfiguration.current.screenHeightDp * 0.92f).dp
@@ -76,13 +76,13 @@ fun PlaceSheet(ui: Ui, p: Place, here: LatLng?) {
         dragHandle = { BottomSheetDefaults.DragHandle(color = c.muted.copy(alpha = 0.5f)) },
     ) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
-            SheetContent(ui, p, here, maxH)
+            SheetContent(ui, p, here, hereFrom, maxH)
         }
     }
 }
 
 @Composable
-private fun SheetContent(ui: Ui, p: Place, here: LatLng?, maxH: Dp) {
+private fun SheetContent(ui: Ui, p: Place, here: LatLng?, hereFrom: String?, maxH: Dp) {
     val c = LocalPal.current
     val st = ui.st
     val cat = Trip.catOf(p)
@@ -104,7 +104,7 @@ private fun SheetContent(ui: Ui, p: Place, here: LatLng?, maxH: Dp) {
             if (!food && Trip.isFree(p)) FreeBadge()
         }
         T(p.name, 28.sp, FontWeight.SemiBold, family = Fonts.display, modifier = Modifier.semantics { heading() })
-        distInfo(here, p)?.let { T(it.text, Ty.body, FontWeight.SemiBold, c.accent) }
+        RouteLine(p, here, hereFrom)
         T(p.desc + if (p.min > 0) " Plan about ${dur(p.min)}." else "", Ty.body)
 
         if (!food) {
@@ -129,6 +129,29 @@ private fun SheetContent(ui: Ui, p: Place, here: LatLng?, maxH: Dp) {
         T(if (food) "Photos from the last 15 years: Wikimedia Commons and Mapillary contributors (CC BY-SA). Saved on your phone after the first look."
           else "Text: Wikipedia. Photos from the last 15 years: Wikimedia Commons and Mapillary contributors (CC BY-SA). Saved on your phone after the first look.",
           Ty.caption, color = c.muted)
+    }
+}
+
+/**
+ * How far the place is and how long the walk takes: along real streets when online, an estimate otherwise.
+ * From you when you're in the city; else from the place you picked, else from the city centre (said so on screen).
+ */
+@Composable
+private fun RouteLine(p: Place, here: LatLng?, hereFrom: String?) {
+    val c = LocalPal.current
+    val from = here ?: LatLng(Trip.city.centerLat, Trip.city.centerLng)
+    val label = if (here == null) "from the city centre" else hereFrom
+    var walk by remember(p.id, from) { mutableStateOf<Route.Walk?>(null) }
+    LaunchedEffect(p.id, from) { walk = Route.walk(from, p) }
+    val text = Route.text(from, p, walk)
+    if (text.isEmpty()) return
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Icon(GoIcon, null, tint = c.accent, modifier = Modifier.size(18.dp))
+        Column {
+            T(text, Ty.body, FontWeight.SemiBold, c.accent)
+            if (label != null && text != "You're here") T(label.replaceFirstChar { it.uppercase() } + (if (walk != null) ", along the streets" else ", estimated"), Ty.caption, color = c.muted)
+            else if (walk == null && text != "You're here") T("Estimated", Ty.caption, color = c.muted)
+        }
     }
 }
 

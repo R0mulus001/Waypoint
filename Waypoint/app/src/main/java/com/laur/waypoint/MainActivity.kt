@@ -113,10 +113,21 @@ class MainActivity : ComponentActivity() {
         if (listening || !hasLocation()) return
         // Listen to every provider the phone has, even ones switched off right now: they start sending fixes as soon
         // as the user turns location on. Before, a provider that was off at launch was never listened to.
-        val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER).filter { it in m.allProviders }
+        // Android 12+ also has the "fused" provider (GPS, Wi-Fi and cell towers combined): it gets a fix indoors and much faster.
+        val names = buildList {
+            if (android.os.Build.VERSION.SDK_INT >= 31) add(LocationManager.FUSED_PROVIDER)
+            add(LocationManager.GPS_PROVIDER); add(LocationManager.NETWORK_PROVIDER)
+        }
+        val providers = names.filter { it in m.allProviders }
+        // The freshest saved position (up to 30 minutes old) shows distances at once, until a new fix arrives.
+        providers.mapNotNull { runCatching { m.getLastKnownLocation(it) }.getOrNull() }
+            .filter { System.currentTimeMillis() - it.time < 30 * 60_000 }.maxByOrNull { it.time }?.let(::onFix)
         providers.forEach { pr ->
-            runCatching { m.getLastKnownLocation(pr) }.getOrNull()?.let { if (System.currentTimeMillis() - it.time < 10 * 60_000) onFix(it) }
             if (runCatching { m.requestLocationUpdates(pr, 15_000L, 20f, listener, mainLooper) }.isSuccess) listening = true
+        }
+        // Ask once for a fresh position right away instead of waiting for the first update.
+        if (android.os.Build.VERSION.SDK_INT >= 30) providers.firstOrNull()?.let { pr ->
+            runCatching { m.getCurrentLocation(pr, null, mainExecutor) { l -> if (l != null) onFix(l) } }
         }
     }
 

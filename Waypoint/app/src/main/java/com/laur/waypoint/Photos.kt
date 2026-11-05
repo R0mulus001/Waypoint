@@ -55,12 +55,12 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
 
     init {
         db.writableDatabase.execSQL("CREATE TABLE IF NOT EXISTS checked(id TEXT PRIMARY KEY)")
-        // Photo choice changed in version 6 (photos from the last 15 years, each place's own Commons category, plus Mapillary). Old picks are cleared once.
-        if (db.kvGet("photoVer") != "6") {
+        // Photo choice changed in version 7 (each place's Commons category now really found; street photos only to fill gaps). Old picks are cleared once.
+        if (db.kvGet("photoVer") != "7") {
             db.writableDatabase.execSQL("DELETE FROM photos")
             db.writableDatabase.execSQL("DELETE FROM checked")
             dir.listFiles()?.forEach { it.delete() }
-            db.kvPut("photoVer", "6")
+            db.kvPut("photoVer", "7")
         }
     }
 
@@ -139,8 +139,11 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
                 else runCatching { if (p.isFood) foodPhotoUrls(p) else sightPhotoUrls(p, got != null) }.onFailure { urlsOk = false; if (isNet(it)) netFail = true; log(p, "photo list", it) }.getOrDefault(emptyList())
             // A mix: recent Wikimedia photos first, then up to 2 (3 for places to eat) recent street photos from Mapillary.
             // Mapillary is extra: if it fails, the place still counts as done with its Wikimedia photos.
-            val street = if (Mapillary.on) runCatching { Mapillary.near(p, if (p.isFood) 3 else 2) }.onFailure { log(p, "mapillary", it) }.getOrDefault(emptyList()) else emptyList()
+            // Street photos only fill a gap: with 4 or more photos of the place itself they're left out, because a street
+            // view from 50 m away mostly shows the street. Then at most 2 (3 for places to eat), always after the Wikimedia ones.
             val cap = if (p.isFood) 5 else 6
+            val room = if (wiki.size >= 4) 0 else minOf(cap - wiki.size, if (p.isFood) 3 else 2)
+            val street = if (Mapillary.on && room > 0) runCatching { Mapillary.near(p, room) }.onFailure { log(p, "mapillary", it) }.getOrDefault(emptyList()) else emptyList()
             val urls = wiki.take(cap - street.size) + street
             val already = have?.photos?.size ?: 0
             val files = ArrayList<File>(have?.photos ?: emptyList())
@@ -384,17 +387,24 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
     }
 
     /**
-     * Commons category of each Wikidata item ("Stephansdom" for St. Stephen's Cathedral), from the item's Commons link,
-     * in one request per 50 items. Everything in such a category shows that place, whatever the files are called.
+     * Commons category of each Wikidata item ("Stephansdom" for St. Stephen's Cathedral). It comes from the item's
+     * "Commons category" property (P373); only if that's missing, from its Commons link when the link is a category.
+     * Big landmarks link to a Commons gallery page instead, so reading only the link found no category for them.
      */
     private fun categories(qids: List<String>): Map<String, String> {
         val out = HashMap<String, String>()
-        qids.distinct().chunked(50).forEach { ids ->
-            val r = JSONObject(get("https://www.wikidata.org/w/api.php?action=wbgetentities&format=json&props=sitelinks&sitefilter=commonswiki&ids=" +
+        qids.distinct().chunked(20).forEach { ids ->
+            val r = JSONObject(get("https://www.wikidata.org/w/api.php?action=wbgetentities&format=json&props=claims%7Csitelinks&sitefilter=commonswiki&ids=" +
                 enc(ids.joinToString("|")))).optJSONObject("entities") ?: return@forEach
             ids.forEach { q ->
-                val t = r.optJSONObject(q)?.optJSONObject("sitelinks")?.optJSONObject("commonswiki")?.optString("title").orEmpty()
-                if (t.startsWith("Category:")) out[q] = t.removePrefix("Category:")
+                val e = r.optJSONObject(q) ?: return@forEach
+                val p373 = e.optJSONObject("claims")?.optJSONArray("P373")?.optJSONObject(0)?.optJSONObject("mainsnak")
+                    ?.optJSONObject("datavalue")?.optString("value").orEmpty().trim()
+                val link = e.optJSONObject("sitelinks")?.optJSONObject("commonswiki")?.optString("title").orEmpty()
+                when {
+                    p373.isNotBlank() -> out[q] = p373.removePrefix("Category:")
+                    link.startsWith("Category:") -> out[q] = link.removePrefix("Category:")
+                }
             }
         }
         return out
@@ -586,7 +596,7 @@ class Downloader(private val photos: Photos, private val city: City, private val
 
 /**
  * Street-level photos from Mapillary (free, CC BY-SA, may be saved on the phone), taken in the last 15 years
- * within about 70 m of the place, by a camera pointing at it. Panoramas are skipped. Needs an access token,
+ * within 50 m of the place (30 m for places to eat), by a camera pointing at it. Panoramas are skipped. Needs an access token,
  * built into the app from the MAPILLARY_TOKEN secret; without one, places just get their Wikimedia photos.
  */
 object Mapillary {
@@ -617,12 +627,13 @@ object Mapillary {
             val g = (o.optJSONObject("computed_geometry") ?: o.optJSONObject("geometry"))?.optJSONArray("coordinates") ?: return@mapNotNull null
             val lng = g.getDouble(0); val lat = g.getDouble(1)
             val d = metres(lat, lng, p.lat, p.lng)
-            if (d < 6 || d > 75) return@mapNotNull null
-            // The camera must look at the place: its heading within 35° of the direction to it.
+            // Close enough that the place fills the picture (places to eat: right in front of the door).
+            if (d < 6 || d > (if (p.isFood) 30 else 50)) return@mapNotNull null
+            // The camera must look straight at the place: its heading within 25° of the direction to it.
             val heading = if (o.has("computed_compass_angle")) o.optDouble("computed_compass_angle") else o.optDouble("compass_angle", Double.NaN)
             if (heading.isNaN()) return@mapNotNull null
             val off = Math.abs(((bearing(lat, lng, p.lat, p.lng) - heading) % 360 + 540) % 360 - 180)
-            if (off > 35) return@mapNotNull null
+            if (off > 25) return@mapNotNull null
             Shot(u, lat, lng, o.optLong("captured_at"), d)
         }
         // Newest first among the close ones, and not two from almost the same spot.

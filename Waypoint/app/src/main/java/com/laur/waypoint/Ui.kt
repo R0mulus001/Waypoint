@@ -136,11 +136,14 @@ fun TripApp(st: TripState, photos: Photos, dl: Downloader, gps: LatLng?, locatio
 
     if (!st.onboarded) { CityWelcome(ui, now); return }
 
-    // GPS only counts when you're actually in this city (within ~40 km). Away from it there are no distances:
-    // places are sorted by importance, and the real location takes over by itself once you arrive.
+    // GPS only counts when you're actually in this city (within ~40 km); the real location takes over once you arrive.
+    // Before that (or with location off) distances come from a place you pick ("I'm near…"), and a place's own page
+    // falls back to the city centre, so it always shows how far it is and how long the walk takes.
     val away = gps != null && km(gps.lat, gps.lng, Trip.city.centerLat, Trip.city.centerLng) > 40
     val gpsHere = gps.takeIf { !away }
-    val here = if (away) null else gpsHere ?: Trip.BY_ID[st.manual]?.let { LatLng(it.lat, it.lng) }
+    val picked = Trip.BY_ID[st.manual]
+    val here = gpsHere ?: picked?.let { LatLng(it.lat, it.lng) }
+    val hereFrom = when { gpsHere != null -> null; picked != null -> "from ${picked.name}"; else -> null }
     BackHandler(ui.open == null) { onBack() }
     BackHandler(ui.open != null) { ui.open = null }
 
@@ -163,7 +166,7 @@ fun TripApp(st: TripState, photos: Photos, dl: Downloader, gps: LatLng?, locatio
             }
             NavBar(CITY_TABS, st.tab.takeIf { t -> CITY_TABS.any { it.key == t } } ?: "near") { st.setTab(it) }
         }
-        ui.open?.let { id -> Trip.BY_ID[id]?.let { PlaceSheet(ui, it, here) } }
+        ui.open?.let { id -> Trip.BY_ID[id]?.let { PlaceSheet(ui, it, here, hereFrom) } }
     }
 }
 
@@ -287,8 +290,8 @@ fun NearbyTab(ui: Ui, now: Now, here: LatLng?, hasGps: Boolean, locationOn: Bool
         item { LocRow(ui, hasGps, locationOn, away) }
         if (pick != null) item { Hero(ui, mo, pick, here) }
         item {
-            SectionHead(if (away) "Top places" else "Around you",
-                if (away) "Most important first. Distances appear when you're in ${Trip.city.name}." else "Closest first. Tap Directions to get there.",
+            SectionHead(if (here == null) "Top places" else "Around you",
+                if (here == null) (if (away) "Most important first. Pick a place above to see distances." else "Most important first.") else "Closest first. Tap Directions to get there.",
                 Modifier.padding(top = 12.dp))
         }
         item {
@@ -308,7 +311,7 @@ fun NearbyTab(ui: Ui, now: Now, here: LatLng?, hasGps: Boolean, locationOn: Bool
             item(key = "must-head") { MustSeeHead("Don't miss", mustSub(filter)) }
             items(must, key = { "must-" + it.id }) { PlaceCard(ui, it, here, top = true) }
             if (list.isNotEmpty()) item(key = "more-head") {
-                MustSeeHead(if (filter == "food") "More places to eat" else "More to explore", if (away) "Most important first" else "Closest first", star = false)
+                MustSeeHead(if (filter == "food") "More places to eat" else "More to explore", if (here == null) "Most important first" else "Closest first", star = false)
             }
         }
         if (list.isEmpty() && must.isEmpty()) item {
@@ -412,9 +415,8 @@ fun LocRow(ui: Ui, hasGps: Boolean, locationOn: Boolean, away: Boolean = false) 
                 Box(Modifier.size(8.dp).clip(CircleShape).background(if (hasGps) c.visited else c.muted))
             }
             if (hasGps) { T("Using your location", Ty.label, color = c.muted); return@Row }
-            if (away) { T("You're not in ${Trip.city.name} yet", Ty.label, color = c.muted); return@Row }
-            if (locationOn) { T("Finding your location…", Ty.label, color = c.muted); return@Row }
-            T("Location off. I'm near:", Ty.label, color = c.muted)
+            if (locationOn && !away) { T("Finding your location…", Ty.label, color = c.muted); return@Row }
+            T(if (away) "Not in ${Trip.city.name} yet. Distances from:" else "Location off. I'm near:", Ty.label, color = c.muted)
             var exp by remember { mutableStateOf(false) }
             Box {
                 PickerChip(Trip.LANDMARKS.firstOrNull { it.first == ui.st.manual }?.second ?: "Choose a place", PinIcon, "Choose where you are") { exp = true }
