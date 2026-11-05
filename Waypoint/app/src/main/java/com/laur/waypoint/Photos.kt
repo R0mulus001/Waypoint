@@ -28,7 +28,7 @@ import java.net.URLEncoder
 import java.text.Normalizer
 
 /** Oldest year a photo may be from: the place should look like it does now. */
-private val MIN_YEAR get() = java.time.LocalDate.now().year - 10
+private val MIN_YEAR get() = java.time.LocalDate.now().year - 20
 
 data class PlaceInfo(val extract: String, val page: String, val photos: List<File>)
 
@@ -55,12 +55,12 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
 
     init {
         db.writableDatabase.execSQL("CREATE TABLE IF NOT EXISTS checked(id TEXT PRIMARY KEY)")
-        // Photo choice changed in version 4 (only photos from the last 10 years, plus Mapillary). Old picks are cleared once.
-        if (db.kvGet("photoVer") != "4") {
+        // Photo choice changed in version 5 (only photos from the last 20 years, plus Mapillary). Old picks are cleared once.
+        if (db.kvGet("photoVer") != "5") {
             db.writableDatabase.execSQL("DELETE FROM photos")
             db.writableDatabase.execSQL("DELETE FROM checked")
             dir.listFiles()?.forEach { it.delete() }
-            db.kvPut("photoVer", "4")
+            db.kvPut("photoVer", "5")
         }
     }
 
@@ -334,7 +334,7 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
     }
 
     /**
-     * Only photos taken in the last 10 years, so the place looks like it does today (no old postcards or scans).
+     * Only photos taken in the last 20 years, so the place looks like it does today (no old postcards or scans).
      * The year comes from the date the photo was taken when the file has one, otherwise from the upload date
      * (old scans uploaded recently nearly always carry their real date, so they're still caught).
      */
@@ -521,7 +521,7 @@ class Downloader(private val photos: Photos, private val city: City, private val
 }
 
 /**
- * Street-level photos from Mapillary (free, CC BY-SA, may be saved on the phone), taken in the last 10 years
+ * Street-level photos from Mapillary (free, CC BY-SA, may be saved on the phone), taken in the last 20 years
  * within about 70 m of the place, by a camera pointing at it. Panoramas are skipped. Needs an access token,
  * built into the app from the MAPILLARY_TOKEN secret; without one, places just get their Wikimedia photos.
  */
@@ -534,7 +534,7 @@ object Mapillary {
     fun near(p: Place, max: Int): List<String> {
         val dLat = 0.00065
         val dLng = dLat / Math.cos(Math.toRadians(p.lat))
-        val since = java.time.LocalDate.now().minusYears(10).toString() + "T00:00:00Z"
+        val since = java.time.LocalDate.now().minusYears(20).toString() + "T00:00:00Z"
         val url = "https://graph.mapillary.com/images?access_token=$token&limit=60" +
             "&fields=id,thumb_1024_url,captured_at,compass_angle,computed_compass_angle,computed_geometry,geometry,is_pano" +
             "&start_captured_at=$since&bbox=" + String.format(java.util.Locale.US, "%.6f,%.6f,%.6f,%.6f", p.lng - dLng, p.lat - dLat, p.lng + dLng, p.lat + dLat)
