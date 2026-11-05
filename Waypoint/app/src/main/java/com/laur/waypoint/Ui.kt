@@ -2,6 +2,8 @@ package com.laur.waypoint
 
 import android.app.DatePickerDialog
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -54,6 +56,8 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -72,93 +76,7 @@ import kotlinx.coroutines.launch
 import androidx.compose.runtime.rememberCoroutineScope
 import java.time.LocalDate
 
-// ---------- small building blocks ----------
-
-@Composable
-fun T(
-    text: String, size: TextUnit = 15.sp, weight: FontWeight = FontWeight.Normal, color: Color = LocalPal.current.fg,
-    family: FontFamily = Fonts.body, modifier: Modifier = Modifier, maxLines: Int = Int.MAX_VALUE, align: TextAlign? = null,
-    letterSpacing: TextUnit = TextUnit.Unspecified, italic: Boolean = false, underline: Boolean = false,
-) {
-    Text(
-        text, modifier = modifier, maxLines = maxLines, overflow = TextOverflow.Ellipsis,
-        style = TextStyle(
-            fontSize = size, fontWeight = weight, color = color, fontFamily = family, lineHeight = size * 1.42f,
-            textAlign = align ?: TextAlign.Unspecified, letterSpacing = letterSpacing,
-            fontStyle = if (italic) FontStyle.Italic else FontStyle.Normal,
-            textDecoration = if (underline) TextDecoration.Underline else null,
-        ),
-    )
-}
-
-@Composable
-fun Label(text: String, color: Color = LocalPal.current.muted, modifier: Modifier = Modifier) =
-    T(text.uppercase(), 12.sp, FontWeight.SemiBold, color, letterSpacing = 1.sp, modifier = modifier)
-
-enum class BtnKind { Primary, Ghost, Food, Dark, OnAccent, OutlineOnAccent }
-
-@Composable
-fun Btn(text: String, modifier: Modifier = Modifier, kind: BtnKind = BtnKind.Primary, small: Boolean = false, onClick: () -> Unit) {
-    val c = LocalPal.current
-    val (bg, fg) = when (kind) {
-        BtnKind.Primary -> c.accent to c.accentFg
-        BtnKind.Ghost -> c.surface to c.fg
-        BtnKind.Food -> c.food to c.surface
-        BtnKind.Dark -> c.fg to c.bg
-        BtnKind.OnAccent -> c.accentFg to c.accent
-        BtnKind.OutlineOnAccent -> Color.Transparent to c.accentFg
-    }
-    val shape = RoundedCornerShape(12.dp)
-    var m = modifier.heightIn(min = if (small) 40.dp else 46.dp).clip(shape).background(bg)
-    if (kind == BtnKind.Ghost) m = m.border(1.dp, c.line, shape)
-    if (kind == BtnKind.OutlineOnAccent) m = m.border(1.dp, c.accentFg.copy(alpha = .45f), shape)
-    Box(m.clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 9.dp), contentAlignment = Alignment.Center) {
-        T(text, if (small) 14.sp else 15.sp, FontWeight.SemiBold, fg, align = TextAlign.Center)
-    }
-}
-
-@Composable
-fun Tag(text: String, food: Boolean) {
-    val c = LocalPal.current
-    Box(Modifier.clip(RoundedCornerShape(5.dp)).background(if (food) c.foodSoft else c.accentSoft).padding(horizontal = 7.dp, vertical = 2.dp)) {
-        T(text.uppercase(), 11.sp, FontWeight.SemiBold, if (food) c.food else c.accent, letterSpacing = 0.7.sp)
-    }
-}
-
-@Composable
-fun FreeBadge() {
-    val c = LocalPal.current
-    Box(Modifier.clip(RoundedCornerShape(6.dp)).background(c.foodSoft).padding(horizontal = 8.dp, vertical = 2.dp)) {
-        T("Free to visit", 12.sp, FontWeight.SemiBold, c.food)
-    }
-}
-
-@Composable
-fun Stars(n: Int, size: TextUnit = 13.sp) {
-    if (n <= 0) return
-    T("★".repeat(n) + "☆".repeat(5 - n), size, color = LocalPal.current.warn, letterSpacing = 1.sp)
-}
-
-@Composable
-fun Card(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
-    val c = LocalPal.current
-    val shape = RoundedCornerShape(14.dp)
-    Box(modifier.fillMaxWidth().clip(shape).background(c.surface).border(1.dp, c.line, shape)) { content() }
-}
-
-fun icon(vararg paths: String) = ImageVector.Builder(defaultWidth = 24.dp, defaultHeight = 24.dp, viewportWidth = 24f, viewportHeight = 24f).apply {
-    paths.forEach {
-        addPath(addPathNodes(it), fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = 2f, strokeLineCap = StrokeCap.Round, strokeLineJoin = StrokeJoin.Round)
-    }
-}.build()
-
-val PinIcon = icon("M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z", "M14.5 9.5a2.5 2.5 0 1 1-5 0a2.5 2.5 0 1 1 5 0")
-val ListIcon = icon("M9 6h11M9 12h11M9 18h11", "M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2")
-val VisitedIcon = icon("M21 12a9 9 0 1 1-18 0a9 9 0 1 1 18 0", "M8 12l3 3 5-6")
-
 // ---------- app shell ----------
-
-data class Toast(val msg: String, val undo: () -> Unit, val stamp: Long = System.nanoTime())
 
 class Ui(val st: TripState, val photos: Photos, val dl: Downloader, val openUrl: (String) -> Unit, val requestLocation: () -> Unit, val scope: CoroutineScope, val onBack: () -> Unit) {
     /** Set by the app: fetches food again for a built guide and swaps the city in. */
@@ -206,90 +124,48 @@ fun TripApp(st: TripState, photos: Photos, dl: Downloader, gps: LatLng?, locatio
     BackHandler(ui.open == null) { onBack() }
     BackHandler(ui.open != null) { ui.open = null }
 
+    val sub = if (st.tab == "visited") st.visited.keys.count { Trip.BY_ID.containsKey(it) }.let { n ->
+        if (n == 0) "Nothing visited yet" else "$n place" + (if (n == 1) "" else "s") + " visited"
+    } else tripLabel(tripDays(st.start.ifBlank { now.key }, st.len))
+
     Box(Modifier.fillMaxSize().background(pal.bg)) {
         Column(Modifier.fillMaxSize()) {
+            CityBar(ui, sub)
             Box(Modifier.weight(1f)) {
-                when (st.tab) {
-                    "plans" -> PlansTab(ui, now, here, gpsHere != null)
-                    "visited" -> VisitedTab(ui)
-                    else -> NearbyTab(ui, now, here, gpsHere != null, locationOn && !away, away)
+                Crossfade(st.tab, animationSpec = tween(150), label = "tab") { tab ->
+                    when (tab) {
+                        "plans" -> PlansTab(ui, now, here, gpsHere != null)
+                        "visited" -> VisitedTab(ui)
+                        else -> NearbyTab(ui, now, here, gpsHere != null, locationOn && !away, away)
+                    }
                 }
-                ToastBar(ui, Modifier.align(Alignment.BottomCenter))
+                Snack(ui.toast, { ui.toast = null }, Modifier.align(Alignment.BottomCenter))
             }
-            TabBar(st)
+            NavBar(CITY_TABS, st.tab.takeIf { t -> CITY_TABS.any { it.key == t } } ?: "near") { st.setTab(it) }
         }
         ui.open?.let { id -> Trip.BY_ID[id]?.let { PlaceSheet(ui, it, here) } }
     }
 }
 
-@Composable
-fun ToastBar(ui: Ui, modifier: Modifier) {
-    val t = ui.toast ?: return
-    val c = LocalPal.current
-    LaunchedEffect(t.stamp) { delay(8000); if (ui.toast?.stamp == t.stamp) ui.toast = null }
-    Row(modifier.padding(12.dp).fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(c.fg).padding(start = 16.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
-        verticalAlignment = Alignment.CenterVertically) {
-        T(t.msg, 14.5.sp, color = c.bg, modifier = Modifier.weight(1f).padding(vertical = 10.dp), maxLines = 2)
-        Box(Modifier.clip(RoundedCornerShape(8.dp)).clickable { t.undo(); ui.toast = null }.padding(horizontal = 12.dp, vertical = 10.dp)) {
-            T("UNDO", 14.sp, FontWeight.SemiBold, if (c.dark) Color(0xFFC8102E) else Color(0xFFFF8A9A), letterSpacing = 1.sp)
-        }
-    }
-}
+private val CITY_TABS = listOf(NavTab("near", "Nearby", PinIcon), NavTab("plans", "Day plans", ListIcon), NavTab("visited", "Visited", VisitedIcon))
 
+/** The city's top bar: back to My trips, the city tile (flag + pin), name and trip line, overflow menu. */
 @Composable
-fun Header(ui: Ui, sub: String) {
+fun CityBar(ui: Ui, sub: String) {
     val c = LocalPal.current
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Box(Modifier.size(40.dp).clip(CircleShape).background(c.surface).border(1.dp, c.line, CircleShape).clickable { ui.onBack() },
-            contentAlignment = Alignment.Center) {
-            T("‹", 24.sp, FontWeight.SemiBold, modifier = Modifier.padding(bottom = 3.dp))
-        }
-        Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Flag()
-                T(Trip.city.name, 27.sp, FontWeight.SemiBold, family = Fonts.display, maxLines = 1)
-            }
-            if (sub.isNotBlank()) T(sub, 14.sp, color = c.muted)
-        }
-        ThemePill()
-    }
-}
-
-@Composable
-fun Flag(w: Int = 33, h: Int = 22, flag: FlagDef = Trip.city.flag) {
-    val c = LocalPal.current
-    val shape = RoundedCornerShape(4.dp)
-    if (flag.emoji != null) {
-        Box(Modifier.size(w.dp, h.dp), contentAlignment = Alignment.Center) {
-            Text(flag.emoji, style = TextStyle(fontSize = (h * 0.95f).sp, lineHeight = (h * 1.0f).sp))
-        }
-        return
-    }
-    val m = Modifier.size(w.dp, h.dp).clip(shape).border(1.dp, c.line, shape)
-    if (flag.vertical) Row(m) { flag.stripes.forEach { Box(Modifier.fillMaxHeight().weight(1f).background(Color(it))) } }
-    else Column(m) { flag.stripes.forEach { Box(Modifier.fillMaxWidth().weight(1f).background(Color(it))) } }
-}
-
-@Composable
-fun TabBar(st: TripState) {
-    val c = LocalPal.current
-    Column(Modifier.fillMaxWidth().background(c.surface)) {
-        Box(Modifier.fillMaxWidth().height(1.dp).background(c.line))
-        Row(Modifier.fillMaxWidth()) {
-            listOf(Triple("near", "Nearby", PinIcon), Triple("plans", "Day plans", ListIcon), Triple("visited", "Visited", VisitedIcon)).forEach { (k, l, ic) ->
-                val sel = st.tab == k
-                val col = if (sel) c.accent else c.muted
-                Column(Modifier.weight(1f).clickable { st.setTab(k) }.padding(top = 10.dp, bottom = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(ic, contentDescription = null, tint = col, modifier = Modifier.size(24.dp))
-                    Spacer(Modifier.height(3.dp))
-                    T(l, 12.5.sp, FontWeight.SemiBold, col)
-                }
+    val city = Trip.city
+    AppBar(onBack = ui.onBack, actions = { MoreMenu(listOf("Download photos for offline" to { ui.downloadAll() })) }) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            FlagTile(codeOf(city), 36.dp, label = city.country)
+            Column {
+                T(city.name, 22.sp, FontWeight.SemiBold, family = Fonts.display, maxLines = 1, modifier = Modifier.semantics { heading() })
+                if (sub.isNotBlank()) T(sub, Ty.label, color = c.muted, maxLines = 1)
             }
         }
     }
 }
 
-private val listPad = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 28.dp)
+private val listPad = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 32.dp)
 
 // ---------- place card ----------
 
@@ -345,7 +221,6 @@ fun NearbyTab(ui: Ui, now: Now, here: LatLng?, hasGps: Boolean, locationOn: Bool
     list = sortNear(list, here)
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = listPad, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item { Header(ui, tripLabel(days)) }
         item { Spacer(Modifier.height(4.dp)); LocRow(ui, hasGps, locationOn, away) }
         if (pick != null) item { Hero(ui, mo, pick, here) }
         item {
@@ -515,7 +390,6 @@ fun PlansTab(ui: Ui, now: Now, here: LatLng?, hasGps: Boolean) {
     val next = stops.firstOrNull { !st.isSeen(it.id) }
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = listPad, verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        item { Header(ui, tripLabel(days)) }
         item {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 T("Trip starts", 13.5.sp, color = c.muted)
@@ -661,7 +535,6 @@ fun VisitedTab(ui: Ui) {
     val noted = st.notes.keys.filter { Trip.BY_ID.containsKey(it) && !st.visited.containsKey(it) }
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = listPad, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item { Header(ui, if (entries.isEmpty()) "Nothing visited yet" else "${entries.size} place" + (if (entries.size == 1) "" else "s") + " visited") }
         if (entries.isEmpty()) item {
             T("Tap Visited on any place, or tick a stop in Day plans. It's saved on your phone with the date and time, together with your notes and stars.",
                 15.sp, color = c.muted, modifier = Modifier.padding(vertical = 12.dp))

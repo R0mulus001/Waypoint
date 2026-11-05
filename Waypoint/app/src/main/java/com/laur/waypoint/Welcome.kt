@@ -101,7 +101,7 @@ fun CityWelcome(ui: Ui, now: Now) {
     val finish = { st.setTab("near"); st.setOnboarded() }
     Pages(page, 2, content = {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Flag(42, 28)
+            FlagTile(codeOf(city), 44.dp, label = city.country)
             T(city.name, 22.sp, FontWeight.SemiBold, family = Fonts.display)
         }
         if (page == 0) {

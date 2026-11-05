@@ -232,7 +232,7 @@ fun HomeScreen(stores: CityStores, onAdd: () -> Unit) {
         items(diary.take(12), key = { "d-" + it.first.key + "|" + it.second.id }) { (city, p, at) ->
             Card(Modifier.clickable { Hub.open(city.key); stores.state(city).setTab("visited") }) {
                 Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Flag(27, 18, city.flag)
+                    FlagTile(codeOf(city), 36.dp, label = city.country)
                     Column(Modifier.weight(1f)) {
                         T(p.name, 15.5.sp, FontWeight.SemiBold, maxLines = 1)
                         T(city.name + " · " + visitedWhen(at, city), 13.sp, color = c.muted)
@@ -288,7 +288,7 @@ private fun TripCard(stores: CityStores, city: City, now: Boolean = false) {
     // The trip you're on now gets an outline in its own colour.
     Card(if (now) Modifier.border(2.dp, accent, RoundedCornerShape(14.dp)) else Modifier) {
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            Flag(48, 32, city.flag)
+            FlagTile(codeOf(city), 52.dp, label = city.country)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     T(city.name, 21.sp, FontWeight.SemiBold, family = Fonts.display, maxLines = 1, modifier = Modifier.weight(1f, fill = false))

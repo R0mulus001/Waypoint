@@ -24,6 +24,8 @@ data class Pal(
     val accent: Color, val accentSoft: Color, val accentFg: Color,
     val visited: Color, val visitedSoft: Color, val caution: Color, val cautionSoft: Color,
     val scrim: Color, val dark: Boolean,
+    /** Accent for actions on the inverse (snackbar) surface. */
+    val inverseAccent: Color = Color.Unspecified,
 ) {
     // Older names, kept so every screen reads the same tokens.
     val food get() = visited
@@ -36,14 +38,14 @@ val LightPal = Pal(
     muted = Color(0xFF5A6270), line = Color(0xFFDCE0E6),
     accent = Color(0xFF1E56B0), accentSoft = Color(0xFFE3EBF8), accentFg = Color(0xFFFFFFFF),
     visited = Color(0xFF1D7A4E), visitedSoft = Color(0xFFE2F3E9), caution = Color(0xFF985A00), cautionSoft = Color(0xFFFCEFD9),
-    scrim = Color(0x8C000000), dark = false,
+    scrim = Color(0x8C000000), dark = false, inverseAccent = Color(0xFF8DB4FF),
 )
 val DarkPal = Pal(
     bg = Color(0xFF0F1114), surface = Color(0xFF1A1D22), surface2 = Color(0xFF23272D), fg = Color(0xFFECEEF1),
     muted = Color(0xFFA1A8B2), line = Color(0xFF2C3138),
     accent = Color(0xFF8DB4FF), accentSoft = Color(0xFF1C2A42), accentFg = Color(0xFF0A1526),
     visited = Color(0xFF5CC48F), visitedSoft = Color(0xFF15301F), caution = Color(0xFFF0B35A), cautionSoft = Color(0xFF33260F),
-    scrim = Color(0xA6000000), dark = true,
+    scrim = Color(0xA6000000), dark = true, inverseAccent = Color(0xFF1E56B0),
 )
 
 val LocalPal = staticCompositionLocalOf { LightPal }
@@ -115,10 +117,10 @@ fun palFor(city: City?, dark: Boolean): Pal {
     val flag = flagAccent(city)
     return if (dark) {
         val a = accentDark(flag)
-        base.copy(accent = a, accentSoft = mixColor(flag, DarkPal.bg, 0.74f), accentFg = DarkPal.accentFg)
+        base.copy(accent = a, accentSoft = mixColor(flag, DarkPal.bg, 0.74f), accentFg = DarkPal.accentFg, inverseAccent = accentLight(flag))
     } else {
         val a = accentLight(flag)
-        base.copy(accent = a, accentSoft = mixColor(a, Color.White, 0.88f), accentFg = Color.White)
+        base.copy(accent = a, accentSoft = mixColor(a, Color.White, 0.88f), accentFg = Color.White, inverseAccent = accentDark(flag))
     }
 }
 
