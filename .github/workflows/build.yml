@@ -24,10 +24,9 @@ jobs:
             magic=$(head -c4 "$out" | od -An -tx1 | tr -d ' \n')
             case "$magic" in 00010000|74727565|4f54544f) echo "$2 ok";; *) echo "$2 not a TTF ($magic), skipped"; rm -f "$out";; esac
           }
-          get "Fraunces:wght@600" fraunces_600
-          get "Work+Sans:wght@400" worksans_400
-          get "Work+Sans:wght@500" worksans_500
-          get "Work+Sans:wght@600" worksans_600
+          # Display face for titles and numbers; body text uses the phone's system font (Roboto).
+          get "Barlow+Semi+Condensed:wght@500" barlowsc_500
+          get "Barlow+Semi+Condensed:wght@600" barlowsc_600
           ls -la app/src/main/res/font
       - uses: actions/setup-java@v4
         with:
@@ -50,7 +49,14 @@ jobs:
         working-directory: Waypoint
         env:
           SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
-      - uses: softprops/action-gh-release@v2
+      # Only main replaces the "Waypoint (latest)" release; other branches keep the APK as a run artifact.
+      - if: github.ref != 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Waypoint-apk
+          path: Waypoint.apk
+      - if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
           name: Waypoint (latest)
