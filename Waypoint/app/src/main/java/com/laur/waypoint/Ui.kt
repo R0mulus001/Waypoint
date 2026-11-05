@@ -5,6 +5,15 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -169,37 +178,53 @@ private val listPad = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bott
 
 // ---------- place card ----------
 
+/** "Visited" as a real toggle: a checkbox for screen readers, a check and the word on screen. */
+@Composable
+fun VisitedToggle(seen: Boolean, modifier: Modifier = Modifier, label: String = "Visited", onToggle: () -> Unit) {
+    val c = LocalPal.current
+    val shape = CircleShape
+    var m = modifier.heightIn(min = 48.dp).clip(shape).background(if (seen) c.visitedSoft else c.surface)
+    if (!seen) m = m.border(1.dp, c.line, shape)
+    Row(m.toggleable(value = seen, role = Role.Checkbox) { onToggle() }.padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+        val pop by animateFloatAsState(if (seen) 1f else 0.85f, spring(dampingRatio = 0.5f, stiffness = 600f), label = "pop")
+        Icon(if (seen) CheckIcon else VisitedIcon, null, tint = if (seen) c.visited else c.muted, modifier = Modifier.size(18.dp).scale(pop))
+        Spacer(Modifier.width(6.dp))
+        T(label, Ty.bodyS, FontWeight.SemiBold, if (seen) c.visited else c.fg, maxLines = 1)
+    }
+}
+
+/** A note and stars on a place, shown under its description. */
+@Composable
+fun NoteLine(note: Note) {
+    if (note.isEmpty) return
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Stars(note.stars)
+        if (note.text.isNotBlank()) T("“" + note.text.trim() + "”", Ty.bodyS, color = LocalPal.current.fg, maxLines = 2, italic = true)
+    }
+}
+
 @Composable
 fun PlaceCard(ui: Ui, p: Place, here: LatLng?) {
     val c = LocalPal.current
     val st = ui.st
     val cat = Trip.catOf(p)
-    val food = Trip.isFoodCat(cat)
     val seen = st.isSeen(p.id)
-    val note = st.note(p.id)
-    Card(Modifier.alpha(if (seen) .55f else 1f).clickable { ui.open = p.id }) {
-        Row(Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Tag(Trip.label(cat), food)
-                    if (Trip.priceText(p).isNotEmpty()) T(Trip.priceText(p), 13.5.sp, FontWeight.Medium, c.muted)
-                }
-                T(p.name, 17.sp, FontWeight.SemiBold)
-                if (Trip.isFree(p)) FreeBadge()
-                distInfo(here, p)?.let { T(it.text, 14.sp, FontWeight.SemiBold, if (food) c.food else c.accent) }
-                T(p.desc, 14.5.sp, color = c.muted)
-                if (!note.isEmpty) {
-                    Stars(note.stars)
-                    if (note.text.isNotBlank()) T("“" + note.text.trim() + "”", 13.sp, color = c.fg, maxLines = 2, italic = true)
-                }
+    Card(onClick = { ui.open = p.id }) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Tag(Trip.label(cat), icon = catIcon(cat))
+                if (Trip.priceText(p).isNotEmpty()) T(Trip.priceText(p), Ty.label, FontWeight.Medium, c.muted)
+                Spacer(Modifier.weight(1f))
+                distInfo(here, p)?.let { T(it.text, Ty.label, FontWeight.SemiBold, c.accent, maxLines = 1) }
             }
-            Column(Modifier.width(86.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Btn("Go", Modifier.fillMaxWidth(), small = true) { ui.openUrl(mapsUrl(here, p)) }
-                val sb = RoundedCornerShape(9.dp)
-                Box(Modifier.fillMaxWidth().heightIn(min = 34.dp).clip(sb).border(1.dp, if (seen) c.food else c.line, sb)
-                    .clickable { ui.toggleSeen(p.id) }.padding(horizontal = 6.dp, vertical = 6.dp), contentAlignment = Alignment.Center) {
-                    T(if (seen) "Visited ✓" else "Visited", 12.5.sp, color = if (seen) c.food else c.muted)
-                }
+            T(p.name, Ty.bodyL, FontWeight.SemiBold, color = if (seen) c.muted else c.fg)
+            if (Trip.isFree(p)) FreeBadge()
+            T(p.desc, Ty.bodyS, color = c.muted, maxLines = 3)
+            NoteLine(st.note(p.id))
+            Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Btn("Directions", Modifier.weight(1f), BtnKind.Tonal, small = true, icon = GoIcon) { ui.openUrl(mapsUrl(here, p)) }
+                VisitedToggle(seen, Modifier.weight(1f)) { ui.toggleSeen(p.id) }
             }
         }
     }
@@ -207,12 +232,12 @@ fun PlaceCard(ui: Ui, p: Place, here: LatLng?) {
 
 // ---------- Nearby tab ----------
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NearbyTab(ui: Ui, now: Now, here: LatLng?, hasGps: Boolean, locationOn: Boolean, away: Boolean = false) {
     val c = LocalPal.current
     val st = ui.st
     val filter = st.filter.takeIf { f -> Trip.FILTERS.any { it.first == f } } ?: Trip.FILTERS.first().first
-    val days = tripDays(st.start.ifBlank { now.key }, st.len)
     var showN by remember { mutableIntStateOf(12) }
     val (mo, pick) = heroPick(st, now, here, ui.skipped.value)
 
@@ -220,30 +245,30 @@ fun NearbyTab(ui: Ui, now: Now, here: LatLng?, hasGps: Boolean, locationOn: Bool
     if (!st.showSeen) list = list.filter { !st.isSeen(it.id) }
     list = sortNear(list, here)
 
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = listPad, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item { Spacer(Modifier.height(4.dp)); LocRow(ui, hasGps, locationOn, away) }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = listPad, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { LocRow(ui, hasGps, locationOn, away) }
         if (pick != null) item { Hero(ui, mo, pick, here) }
         item {
-            Column(Modifier.padding(top = 6.dp)) {
-                T(if (away) "Top places" else "Around you", 20.sp, FontWeight.SemiBold, family = Fonts.display)
-                T(if (away) "Most important first. Distances appear when you're in ${Trip.city.name}." else "Closest first. Tap Go for directions.", 14.sp, color = c.muted)
-            }
+            SectionHead(if (away) "Top places" else "Around you",
+                if (away) "Most important first. Distances appear when you're in ${Trip.city.name}." else "Closest first. Tap Directions to get there.",
+                Modifier.padding(top = 12.dp))
         }
         item {
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Trip.FILTERS.forEach { (v, l) ->
                     val on = filter == v
-                    Box(Modifier.clip(CircleShape).background(if (on) c.fg else c.surface).border(1.dp, if (on) c.fg else c.line, CircleShape)
-                        .clickable { st.setFilter(v); showN = 12 }.padding(horizontal = 14.dp, vertical = 9.dp)) {
-                        T(l, 14.sp, if (on) FontWeight.SemiBold else FontWeight.Normal, if (on) c.bg else c.fg)
-                    }
+                    FilterChip(selected = on, onClick = { st.setFilter(v); showN = 12 }, label = { Text(l, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal) },
+                        leadingIcon = if (on) ({ Icon(CheckIcon, null, Modifier.size(16.dp)) }) else null,
+                        shape = CircleShape,
+                        colors = FilterChipDefaults.filterChipColors(containerColor = c.surface, labelColor = c.fg,
+                            selectedContainerColor = c.fg, selectedLabelColor = c.bg, selectedLeadingIconColor = c.bg))
                 }
             }
         }
         if (here == null && !away) item { WarnNote(listOf("" to "Turn on location, or pick where you are above, to sort places by distance.")) }
         if (list.isEmpty()) item {
-            T("Nothing left in this category. Show visited places to see them again.", 15.sp, color = c.muted, align = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth().padding(vertical = 20.dp))
+            T("Nothing left in this category. Show visited places to see them again.", Ty.body, color = c.muted, align = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp))
         }
         items(list.take(showN), key = { it.id }) { PlaceCard(ui, it, here) }
         item {
@@ -255,7 +280,19 @@ fun NearbyTab(ui: Ui, now: Now, here: LatLng?, hasGps: Boolean, locationOn: Bool
         }
         if (Trip.city.generated && Trip.FOOD.isEmpty()) item { FoodRetryRow(ui) }
         item { OfflineRow(ui) }
-        item { T("Opening hours change, so check in Google Maps before you go.", 12.5.sp, color = c.muted) }
+        item { T("Opening hours change, so check in Google Maps before you go.", Ty.caption, color = c.muted, modifier = Modifier.padding(horizontal = 4.dp)) }
+    }
+}
+
+/** Card title row for the small status cards: an icon tile and a label. */
+@Composable
+private fun CardHead(icon: ImageVector, text: String) {
+    val c = LocalPal.current
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Box(Modifier.size(32.dp).clip(RoundedCornerShape(10.dp)).background(c.surface2), contentAlignment = Alignment.Center) {
+            Icon(icon, null, tint = c.fg, modifier = Modifier.size(18.dp))
+        }
+        Label(text, c.fg)
     }
 }
 
@@ -265,10 +302,10 @@ fun FoodRetryRow(ui: Ui) {
     var busy by remember { mutableStateOf(false) }
     var msg by remember { mutableStateOf<String?>(null) }
     Card {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Label("Places to eat and drink")
-            T(msg ?: "Cafés, restaurants and bars couldn't load when this guide was built. The map service may have been busy.", 14.5.sp, color = c.muted)
-            Btn(if (busy) "Loading…" else "Load places to eat", Modifier.fillMaxWidth(), BtnKind.Ghost, small = true) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            CardHead(FoodIcon, "Places to eat and drink")
+            T(msg ?: "Cafés, restaurants and bars couldn't load when this guide was built. The map service may have been busy.", Ty.bodyS, color = c.muted)
+            Btn(if (busy) "Loading…" else "Load places to eat", Modifier.fillMaxWidth(), BtnKind.Tonal, small = true) {
                 if (!busy) { busy = true; msg = null
                     ui.scope.launch {
                         runCatching { ui.reloadFood() }.onFailure { msg = "Still couldn't load them. Try again in a few minutes." }
@@ -286,29 +323,27 @@ fun OfflineRow(ui: Ui) {
     val dl = ui.dl
     LaunchedEffect(ui.open) { dl.refresh() }
     Card {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Label("Offline photos")
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            CardHead(PhotoIcon, "Offline photos")
             when {
                 dl.running -> {
-                    T("Downloading… ${dl.done} of ${dl.total} places", 15.sp, FontWeight.SemiBold)
-                    Box(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(c.line)) {
-                        Box(Modifier.fillMaxWidth(if (dl.total == 0) 0f else dl.done / dl.total.toFloat()).fillMaxHeight().clip(RoundedCornerShape(3.dp)).background(c.accent))
-                    }
-                    T("It keeps going if you leave this screen. Photos found so far: ${dl.withPhotos} places.", 13.sp, color = c.muted)
+                    T("Downloading… ${dl.done} of ${dl.total} places", Ty.body, FontWeight.SemiBold)
+                    Bar(if (dl.total == 0) 0f else dl.done / dl.total.toFloat())
+                    T("It keeps going if you leave this screen. Photos found so far: ${dl.withPhotos} places.", Ty.label, color = c.muted)
                 }
                 dl.failed == 0 -> {
-                    T("All done. Photos and info are saved on your phone and work without internet.", 15.sp)
+                    T("All done. Photos and info are saved on your phone and work without internet.", Ty.body)
                     val none = dl.places - dl.withPhotos
-                    if (none > 0) T("Photos for ${dl.withPhotos} places. The other $none have no photos online (mostly cafés and restaurants).", 13.sp, color = c.muted)
+                    if (none > 0) T("Photos for ${dl.withPhotos} places. The other $none have no photos online (mostly cafés and restaurants).", Ty.label, color = c.muted)
                 }
                 dl.finished == 0 && dl.withPhotos == 0 -> {
-                    T("Download photos and info for all ${dl.places} places so the app works without internet (Wi-Fi is best).", 14.5.sp, color = c.muted)
-                    Btn("Download all", Modifier.fillMaxWidth(), BtnKind.Ghost, small = true) { dl.start() }
+                    T("Download photos and info for all ${dl.places} places so the app works without internet (Wi-Fi is best).", Ty.bodyS, color = c.muted)
+                    Btn("Download all", Modifier.fillMaxWidth(), BtnKind.Tonal, small = true, icon = DownloadIcon) { dl.start() }
                 }
                 else -> {
                     T("${dl.finished} of ${dl.places} places done, photos for ${dl.withPhotos}. ${dl.failed} still to go " +
-                        "(or the server was busy).", 14.5.sp, color = c.muted)
-                    Btn("Download the remaining ${dl.failed}", Modifier.fillMaxWidth(), BtnKind.Ghost, small = true) { dl.start() }
+                        "(or the server was busy).", Ty.bodyS, color = c.muted)
+                    Btn("Download the remaining ${dl.failed}", Modifier.fillMaxWidth(), BtnKind.Tonal, small = true, icon = DownloadIcon) { dl.start() }
                 }
             }
         }
@@ -318,45 +353,53 @@ fun OfflineRow(ui: Ui) {
 @Composable
 fun LocRow(ui: Ui, hasGps: Boolean, locationOn: Boolean, away: Boolean = false) {
     val c = LocalPal.current
-    Column {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        val on = Color(0xFF2FA36B)
-        Box(Modifier.size(if (hasGps) 17.dp else 9.dp).clip(CircleShape).background(if (hasGps) on.copy(alpha = .25f) else Color.Transparent), contentAlignment = Alignment.Center) {
-            Box(Modifier.size(9.dp).clip(CircleShape).background(if (hasGps) on else c.muted))
-        }
-        if (hasGps) { T("Using your location", 13.5.sp, color = c.muted); return@Row }
-        if (away) { T("You're not in ${Trip.city.name} yet", 13.5.sp, color = c.muted); return@Row }
-        if (locationOn) { T("Finding your location…", 13.5.sp, color = c.muted); return@Row }
-        T("Location off. I'm near:", 13.5.sp, color = c.muted)
-        var exp by remember { mutableStateOf(false) }
-        Box {
-            val shape = RoundedCornerShape(9.dp)
-            Box(Modifier.clip(shape).background(c.surface).border(1.dp, c.line, shape).clickable { exp = true }.padding(horizontal = 10.dp, vertical = 7.dp)) {
-                T((Trip.LANDMARKS.firstOrNull { it.first == ui.st.manual }?.second ?: "Choose a place") + "  ▾", 14.sp)
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(Modifier.heightIn(min = 40.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Box(Modifier.size(if (hasGps) 16.dp else 8.dp).clip(CircleShape).background(if (hasGps) c.visited.copy(alpha = .22f) else Color.Transparent),
+                contentAlignment = Alignment.Center) {
+                Box(Modifier.size(8.dp).clip(CircleShape).background(if (hasGps) c.visited else c.muted))
             }
-            DropdownMenu(exp, { exp = false }) {
-                Trip.LANDMARKS.forEach { (id, name) -> DropdownMenuItem(text = { Text(name) }, onClick = { ui.st.setManual(id); exp = false }) }
+            if (hasGps) { T("Using your location", Ty.label, color = c.muted); return@Row }
+            if (away) { T("You're not in ${Trip.city.name} yet", Ty.label, color = c.muted); return@Row }
+            if (locationOn) { T("Finding your location…", Ty.label, color = c.muted); return@Row }
+            T("Location off. I'm near:", Ty.label, color = c.muted)
+            var exp by remember { mutableStateOf(false) }
+            Box {
+                PickerChip(Trip.LANDMARKS.firstOrNull { it.first == ui.st.manual }?.second ?: "Choose a place", PinIcon, "Choose where you are") { exp = true }
+                DropdownMenu(exp, { exp = false }) {
+                    Trip.LANDMARKS.forEach { (id, name) -> DropdownMenuItem(text = { Text(name) }, onClick = { ui.st.setManual(id); exp = false }) }
+                }
             }
         }
-    }
-    if (!hasGps && !locationOn && !away) T("Turn on location", 14.sp, FontWeight.SemiBold, c.accent,
-        modifier = Modifier.padding(top = 8.dp).clickable { ui.requestLocation() })
+        if (!hasGps && !locationOn && !away) TextButton(onClick = { ui.requestLocation() }) {
+            Icon(LocateIcon, null, tint = c.accent, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Turn on location", color = c.accent, fontWeight = FontWeight.SemiBold)
+        }
     }
 }
 
+/** "Right now": the one suggestion for this moment. Tonal, with a single filled action. */
 @Composable
 fun Hero(ui: Ui, mo: Moment, p: Place, here: LatLng?) {
     val c = LocalPal.current
-    val food = Trip.isFoodCat(Trip.catOf(p))
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(c.accent).padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Label(mo.k + " · " + Trip.label(Trip.catOf(p)), c.accentFg.copy(alpha = .85f))
-        T(p.name, 24.sp, FontWeight.SemiBold, c.accentFg, Fonts.display)
-        T(distInfo(here, p)?.text ?: "Distance shows when you're nearby", 15.sp, FontWeight.SemiBold, c.accentFg)
-        T(p.desc, 15.sp, color = c.accentFg.copy(alpha = .9f))
-        T(if (food) "Prices & menu" else "See photos", 14.sp, FontWeight.SemiBold, c.accentFg, underline = true, modifier = Modifier.clickable { ui.open = p.id })
-        Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Btn("Take me there", Modifier.weight(1f), BtnKind.OnAccent) { ui.openUrl(mapsUrl(here, p)) }
-            Btn("Something else", Modifier.weight(1f), BtnKind.OutlineOnAccent) { ui.skipped.value = ui.skipped.value + p.id }
+    val cat = Trip.catOf(p)
+    val food = Trip.isFoodCat(cat)
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(Rad.l)).background(c.accentSoft)) {
+        Column(Modifier.fillMaxWidth().clickable(onClickLabel = "Open ${p.name}") { ui.open = p.id }.padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(catIcon(cat), null, tint = c.fg, modifier = Modifier.size(18.dp))
+                T(mo.k + " · " + Trip.label(cat), Ty.label, FontWeight.SemiBold, c.fg)
+            }
+            T(p.name, 26.sp, FontWeight.SemiBold, c.fg, Fonts.display)
+            T(distInfo(here, p)?.text ?: "Distance shows when you're nearby", Ty.bodyS, FontWeight.SemiBold, c.fg)
+            T(p.desc, Ty.bodyS, color = c.fg, maxLines = 4)
+            T(if (food) "Prices & menu" else "See photos", Ty.bodyS, FontWeight.SemiBold, c.fg, underline = true, modifier = Modifier.padding(vertical = 6.dp))
+        }
+        Row(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Btn("Take me there", Modifier.weight(1f), icon = GoIcon) { ui.openUrl(mapsUrl(here, p)) }
+            Btn("Something else", Modifier.weight(1f), BtnKind.Ghost, icon = ShuffleIcon) { ui.skipped.value = ui.skipped.value + p.id }
         }
     }
 }
@@ -364,14 +407,15 @@ fun Hero(ui: Ui, mo: Moment, p: Place, here: LatLng?) {
 @Composable
 fun WarnNote(parts: List<Pair<String, String>>) {
     val c = LocalPal.current
-    val shape = RoundedCornerShape(10.dp)
-    Box(Modifier.fillMaxWidth().clip(shape).background(c.surface).border(1.dp, c.warn, shape).padding(horizontal = 12.dp, vertical = 10.dp)) {
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(Rad.m)).background(c.cautionSoft).padding(horizontal = 14.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Icon(TipIcon, null, tint = c.caution, modifier = Modifier.size(20.dp))
         Text(buildAnnotatedString {
             parts.forEach { (b, rest) ->
-                if (b.isNotEmpty()) { pushStyle(SpanStyle(fontWeight = FontWeight.SemiBold, color = c.warn)); append(b); pop() }
+                if (b.isNotEmpty()) { pushStyle(SpanStyle(fontWeight = FontWeight.SemiBold, color = c.caution)); append(b); pop() }
                 append(rest)
             }
-        }, style = TextStyle(fontSize = 13.5.sp, color = c.fg, fontFamily = Fonts.body, lineHeight = 19.sp))
+        }, style = TextStyle(fontSize = Ty.bodyS, color = c.fg, fontFamily = Fonts.body, lineHeight = 20.sp))
     }
 }
 
