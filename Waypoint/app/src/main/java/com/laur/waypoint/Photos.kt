@@ -27,6 +27,9 @@ import java.net.URL
 import java.net.URLEncoder
 import java.text.Normalizer
 
+/** Oldest year a photo may be from: the place should look like it does now. */
+private val MIN_YEAR get() = java.time.LocalDate.now().year - 10
+
 data class PlaceInfo(val extract: String, val page: String, val photos: List<File>)
 
 private class Busy(val waitMs: Long = 0) : RuntimeException("busy")
@@ -52,12 +55,12 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
 
     init {
         db.writableDatabase.execSQL("CREATE TABLE IF NOT EXISTS checked(id TEXT PRIMARY KEY)")
-        // Photo choice changed in version 3 (extra photos must be named after the place). Old picks are cleared once.
-        if (db.kvGet("photoVer") != "3") {
+        // Photo choice changed in version 4 (only photos from the last 10 years, plus Mapillary). Old picks are cleared once.
+        if (db.kvGet("photoVer") != "4") {
             db.writableDatabase.execSQL("DELETE FROM photos")
             db.writableDatabase.execSQL("DELETE FROM checked")
             dir.listFiles()?.forEach { it.delete() }
-            db.kvPut("photoVer", "3")
+            db.kvPut("photoVer", "4")
         }
     }
 
@@ -132,8 +135,13 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
             val got = pre[p.id]
             val text = if (p.isFood) null else if (got != null) got.text
                 else runCatching { fetchText(p) }.onFailure { textOk = false; if (isNet(it)) netFail = true; log(p, "text", it) }.getOrNull()
-            val urls = if (got != null && got.urls.isNotEmpty()) got.urls
+            val wiki = if (got != null && got.urls.isNotEmpty()) got.urls
                 else runCatching { if (p.isFood) foodPhotoUrls(p) else sightPhotoUrls(p, got != null) }.onFailure { urlsOk = false; if (isNet(it)) netFail = true; log(p, "photo list", it) }.getOrDefault(emptyList())
+            // A mix: recent Wikimedia photos first, then up to 2 (3 for places to eat) recent street photos from Mapillary.
+            // Mapillary is extra: if it fails, the place still counts as done with its Wikimedia photos.
+            val street = if (Mapillary.on) runCatching { Mapillary.near(p, if (p.isFood) 3 else 2) }.onFailure { log(p, "mapillary", it) }.getOrDefault(emptyList()) else emptyList()
+            val cap = if (p.isFood) 5 else 6
+            val urls = wiki.take(cap - street.size) + street
             val already = have?.photos?.size ?: 0
             val files = ArrayList<File>(have?.photos ?: emptyList())
             if (already == 0) urls.forEachIndexed { k, u ->
@@ -270,7 +278,7 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
         val titles = asked.values.distinct().joinToString("|") { it }
         val base = "https://en.wikipedia.org/w/api.php?action=query&format=json&redirects=1&titles=" + enc(titles)
         val a = JSONObject(get(base + "&prop=extracts%7Cpageimages%7Cinfo%7Cpageprops&exintro=1&explaintext=1&exsentences=3&exlimit=20" +
-            "&piprop=thumbnail&pithumbsize=960&pilimit=20&inprop=url&ppprop=disambiguation")).optJSONObject("query")
+            "&piprop=thumbnail%7Cname&pithumbsize=960&pilimit=20&inprop=url&ppprop=disambiguation")).optJSONObject("query")
         val b = JSONObject(get(base + "&prop=images&imlimit=max")).optJSONObject("query")
         val names = titleMap(a, asked.values.toList())
         fun pages(q: JSONObject?): Map<String, JSONObject> {
@@ -285,18 +293,9 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
             cand[id] = (0 until imgs.length()).map { imgs.getJSONObject(it).optString("title") }
                 .filter { Regex("\\.(jpe?g|webp)$", RegexOption.IGNORE_CASE).containsMatchIn(it) && !junk.containsMatchIn(it) }.take(10)
         }
-        val info = HashMap<String, String>()
-        cand.values.flatten().distinct().chunked(50).forEach { files ->
-            val r = JSONObject(get("https://en.wikipedia.org/w/api.php?action=query&format=json&prop=imageinfo&iiprop=url%7Cmime%7Csize&iiurlwidth=960&titles=" +
-                enc(files.joinToString("|")))).optJSONObject("query")
-            val fm = titleMap(r, files)
-            val ps = pages(r)
-            files.forEach { f ->
-                val ii = ps[fm[f]]?.optJSONArray("imageinfo")?.optJSONObject(0) ?: return@forEach
-                if (usable(f, ii.optString("mime"), ii.optInt("width"), ii.optInt("height")))
-                    info[f] = ii.optString("thumburl").ifBlank { ii.optString("url") }
-            }
-        }
+        // Lead pictures are checked the same way (type, size and the date they were taken), in the same bulk requests.
+        val leads = asked.mapNotNull { (_, t) -> pa[names[t]]?.optString("pageimage")?.takeIf { it.isNotBlank() }?.let { "File:" + it.replace('_', ' ') } }
+        val info = fileInfo(cand.values.flatten() + leads)
         asked.forEach { (id, t) ->
             val pg = pa[names[t]] ?: return@forEach
             if (pg.has("missing")) return@forEach
@@ -304,7 +303,8 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
             val text = if (ex.isNotBlank() && pg.optJSONObject("pageprops")?.has("disambiguation") != true) ex to pg.optString("fullurl") else null
             val picked = LinkedHashMap<String, String>()
             fun add(u: String) { val n = fileName(u); if (n.isNotBlank() && !picked.containsKey(n)) picked[n] = u }
-            pg.optJSONObject("thumbnail")?.optString("source")?.takeIf { it.isNotBlank() && leadOk(it) }?.let(::add)
+            val leadFile = pg.optString("pageimage").takeIf { it.isNotBlank() }?.let { "File:" + it.replace('_', ' ') }
+            pg.optJSONObject("thumbnail")?.optString("source")?.takeIf { it.isNotBlank() && leadOk(it) && leadFile != null && info.containsKey(leadFile) }?.let(::add)
             // Articles also show other buildings (comparisons, "see also", boxes at the bottom): only pictures named after this place.
             val toks = placeTokens(chunk.first { it.id == id }, t)
             cand[id]?.filter { matches(it, toks) }?.forEach { f -> info[f]?.let(::add) }
@@ -327,15 +327,48 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
     private val mapWords = Regex("(stadt|lage|grund|uber|ubersichts|land|welt|orts|bezirks|strassen|stra(ss|ß)en)(plan|karte|riss)|grundriss|" +
         "(?<![a-z])atlas(?![a-z])|cartograph|location[ _-]?map|relief[ _-]?map|blank[ _-]?map|outline[ _-]?map", RegexOption.IGNORE_CASE)
 
-    private fun usable(title: String, mime: String, w: Int, h: Int): Boolean =
-        Regex("jpeg|webp").containsMatchIn(mime) && w >= 600 && h >= 400 && w.toFloat() / h in 0.6f..2.6f && !junk.containsMatchIn(title) &&
-            !mapWords.containsMatchIn(plain(title))
+    private fun usable(title: String, ii: JSONObject): Boolean {
+        val w = ii.optInt("width"); val h = ii.optInt("height")
+        return Regex("jpeg|webp").containsMatchIn(ii.optString("mime")) && w >= 600 && h >= 400 && w.toFloat() / h in 0.6f..2.6f &&
+            !junk.containsMatchIn(title) && !mapWords.containsMatchIn(plain(title)) && recent(ii)
+    }
+
+    /**
+     * Only photos taken in the last 10 years, so the place looks like it does today (no old postcards or scans).
+     * The year comes from the date the photo was taken when the file has one, otherwise from the upload date
+     * (old scans uploaded recently nearly always carry their real date, so they're still caught).
+     */
+    private fun recent(ii: JSONObject): Boolean {
+        val taken = ii.optJSONObject("extmetadata")?.optJSONObject("DateTimeOriginal")?.optString("value").orEmpty()
+        val year = Regex("(?<!\\d)(1[89]\\d\\d|20\\d\\d)(?!\\d)").find(taken)?.value?.toInt()
+            ?: ii.optString("timestamp").take(4).toIntOrNull() ?: return false
+        return year >= MIN_YEAR
+    }
 
     /** The photo at the top of the place's Wikipedia article: almost always the landmark itself. */
     private fun leadImage(title: String): String? {
-        val pg = firstPage(JSONObject(get("https://en.wikipedia.org/w/api.php?action=query&format=json&redirects=1&prop=pageimages&piprop=thumbnail&pithumbsize=960&titles=" +
+        val pg = firstPage(JSONObject(get("https://en.wikipedia.org/w/api.php?action=query&format=json&redirects=1&prop=pageimages&piprop=thumbnail%7Cname&pithumbsize=960&titles=" +
             enc(title.replace('_', ' '))))) ?: return null
-        return pg.optJSONObject("thumbnail")?.optString("source")?.takeIf { it.isNotBlank() && leadOk(it) }
+        val thumb = pg.optJSONObject("thumbnail")?.optString("source")?.takeIf { it.isNotBlank() && leadOk(it) } ?: return null
+        val name = pg.optString("pageimage").takeIf { it.isNotBlank() } ?: return null
+        return if (fileInfo(listOf("File:" + name.replace('_', ' '))).isNotEmpty()) thumb else null
+    }
+
+    /** Size, type and date of some Commons files; only the ones fit to show, as file title -> picture address. */
+    private fun fileInfo(files: List<String>): Map<String, String> {
+        val out = HashMap<String, String>()
+        files.distinct().chunked(50).forEach { chunk ->
+            val r = JSONObject(get("https://en.wikipedia.org/w/api.php?action=query&format=json&prop=imageinfo&iiprop=url%7Cmime%7Csize%7Ctimestamp%7Cextmetadata&iiextmetadatafilter=DateTimeOriginal&iiurlwidth=960&titles=" +
+                enc(chunk.joinToString("|")))).optJSONObject("query")
+            val fm = titleMap(r, chunk)
+            val ps = r?.optJSONObject("pages") ?: return@forEach
+            val byTitle = ps.keys().asSequence().map { ps.getJSONObject(it) }.associateBy { it.optString("title") }
+            chunk.forEach { f ->
+                val ii = byTitle[fm[f]]?.optJSONArray("imageinfo")?.optJSONObject(0) ?: return@forEach
+                if (usable(f, ii)) out[f] = ii.optString("thumburl").ifBlank { ii.optString("url") }
+            }
+        }
+        return out
     }
 
     /**
@@ -351,14 +384,14 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
     /** Photos used inside the place's own Wikipedia article: chosen by editors, so they show the right place. */
     private fun articleImages(title: String): List<Img> {
         val r = JSONObject(get("https://en.wikipedia.org/w/api.php?action=query&format=json&redirects=1&generator=images&gimlimit=60" +
-            "&prop=imageinfo&iiprop=url%7Cmime%7Csize&iiurlwidth=960&titles=" + enc(title.replace('_', ' '))))
+            "&prop=imageinfo&iiprop=url%7Cmime%7Csize%7Ctimestamp%7Cextmetadata&iiextmetadatafilter=DateTimeOriginal&iiurlwidth=960&titles=" + enc(title.replace('_', ' '))))
         val pages = r.optJSONObject("query")?.optJSONObject("pages") ?: return emptyList()
         val out = ArrayList<Img>()
         pages.keys().forEach { k ->
             val pg = pages.getJSONObject(k)
             val ii = pg.optJSONArray("imageinfo")?.optJSONObject(0) ?: return@forEach
             val t = pg.optString("title")
-            if (usable(t, ii.optString("mime"), ii.optInt("width"), ii.optInt("height")))
+            if (usable(t, ii))
                 out.add(Img(t, ii.optString("thumburl").ifBlank { ii.optString("url") }))
         }
         return out
@@ -366,12 +399,12 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
 
     private fun commons(term: String, limit: Int = 20): List<Img> {
         val r = JSONObject(get("https://commons.wikimedia.org/w/api.php?action=query&format=json&generator=search&gsrnamespace=6&gsrlimit=$limit&gsrsearch=" +
-            enc("filetype:bitmap $term") + "&prop=imageinfo&iiprop=url%7Cmime%7Csize&iiurlwidth=960"))
+            enc("filetype:bitmap $term") + "&prop=imageinfo&iiprop=url%7Cmime%7Csize%7Ctimestamp%7Cextmetadata&iiextmetadatafilter=DateTimeOriginal&iiurlwidth=960"))
         val pages = r.optJSONObject("query")?.optJSONObject("pages") ?: return emptyList()
         return pages.keys().asSequence().map { pages.getJSONObject(it) }.sortedBy { it.optInt("index", 999) }.mapNotNull { pg ->
             val ii = pg.optJSONArray("imageinfo")?.optJSONObject(0) ?: return@mapNotNull null
             val t = pg.optString("title")
-            if (usable(t, ii.optString("mime"), ii.optInt("width"), ii.optInt("height"))) Img(t, ii.optString("thumburl").ifBlank { ii.optString("url") }) else null
+            if (usable(t, ii)) Img(t, ii.optString("thumburl").ifBlank { ii.optString("url") }) else null
         }.toList()
     }
 
@@ -484,5 +517,69 @@ class Downloader(private val photos: Photos, private val city: City, private val
                 running = false
             }
         }
+    }
+}
+
+/**
+ * Street-level photos from Mapillary (free, CC BY-SA, may be saved on the phone), taken in the last 10 years
+ * within about 70 m of the place, by a camera pointing at it. Panoramas are skipped. Needs an access token,
+ * built into the app from the MAPILLARY_TOKEN secret; without one, places just get their Wikimedia photos.
+ */
+object Mapillary {
+    private val token = BuildConfig.MAPILLARY_TOKEN.trim()
+    val on get() = token.isNotEmpty()
+
+    private class Shot(val url: String, val lat: Double, val lng: Double, val taken: Long, val dist: Double)
+
+    fun near(p: Place, max: Int): List<String> {
+        val dLat = 0.00065
+        val dLng = dLat / Math.cos(Math.toRadians(p.lat))
+        val since = java.time.LocalDate.now().minusYears(10).toString() + "T00:00:00Z"
+        val url = "https://graph.mapillary.com/images?access_token=$token&limit=60" +
+            "&fields=id,thumb_1024_url,captured_at,compass_angle,computed_compass_angle,computed_geometry,geometry,is_pano" +
+            "&start_captured_at=$since&bbox=" + String.format(java.util.Locale.US, "%.6f,%.6f,%.6f,%.6f", p.lng - dLng, p.lat - dLat, p.lng + dLng, p.lat + dLat)
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = 10000; c.readTimeout = 15000
+        c.setRequestProperty("User-Agent", "Waypoint/1.1 (personal Android city guide)")
+        val body = try {
+            if (c.responseCode !in 200..299) throw RuntimeException("HTTP ${c.responseCode}")
+            c.inputStream.bufferedReader().use { it.readText() }
+        } finally { c.disconnect() }
+        val data = JSONObject(body).optJSONArray("data") ?: return emptyList()
+        val shots = (0 until data.length()).mapNotNull { i ->
+            val o = data.getJSONObject(i)
+            if (o.optBoolean("is_pano")) return@mapNotNull null
+            val u = o.optString("thumb_1024_url").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val g = (o.optJSONObject("computed_geometry") ?: o.optJSONObject("geometry"))?.optJSONArray("coordinates") ?: return@mapNotNull null
+            val lng = g.getDouble(0); val lat = g.getDouble(1)
+            val d = metres(lat, lng, p.lat, p.lng)
+            if (d < 6 || d > 75) return@mapNotNull null
+            // The camera must look at the place: its heading within 35° of the direction to it.
+            val heading = if (o.has("computed_compass_angle")) o.optDouble("computed_compass_angle") else o.optDouble("compass_angle", Double.NaN)
+            if (heading.isNaN()) return@mapNotNull null
+            val off = Math.abs(((bearing(lat, lng, p.lat, p.lng) - heading) % 360 + 540) % 360 - 180)
+            if (off > 35) return@mapNotNull null
+            Shot(u, lat, lng, o.optLong("captured_at"), d)
+        }
+        // Newest first among the close ones, and not two from almost the same spot.
+        val picked = ArrayList<Shot>()
+        shots.sortedWith(compareBy<Shot> { (it.dist / 25).toInt() }.thenByDescending { it.taken }).forEach { s ->
+            if (picked.size < max && picked.none { metres(it.lat, it.lng, s.lat, s.lng) < 12 }) picked.add(s)
+        }
+        return picked.map { it.url }
+    }
+
+    private fun metres(a: Double, b: Double, c: Double, d: Double): Double {
+        val r = 6371000.0
+        val dLat = Math.toRadians(c - a); val dLng = Math.toRadians(d - b)
+        val h = Math.sin(dLat / 2).let { it * it } + Math.cos(Math.toRadians(a)) * Math.cos(Math.toRadians(c)) * Math.sin(dLng / 2).let { it * it }
+        return 2 * r * Math.asin(Math.sqrt(h))
+    }
+
+    private fun bearing(a: Double, b: Double, c: Double, d: Double): Double {
+        val f1 = Math.toRadians(a); val f2 = Math.toRadians(c); val dl = Math.toRadians(d - b)
+        val y = Math.sin(dl) * Math.cos(f2)
+        val x = Math.cos(f1) * Math.sin(f2) - Math.sin(f1) * Math.cos(f2) * Math.cos(dl)
+        return (Math.toDegrees(Math.atan2(y, x)) + 360) % 360
     }
 }

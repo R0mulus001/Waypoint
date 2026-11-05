@@ -15,6 +15,9 @@ android {
         val run = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 0
         versionCode = 100 + run
         versionName = "1.1.$run"
+        // Mapillary street photos: token from the MAPILLARY_TOKEN secret. Without it the app builds and simply skips Mapillary.
+        val mapillary = (System.getenv("MAPILLARY_TOKEN") ?: "").trim().replace("\"", "")
+        buildConfigField("String", "MAPILLARY_TOKEN", "\"$mapillary\"")
     }
 
     signingConfigs {
@@ -40,7 +43,7 @@ android {
             signingConfig = signingConfigs.getByName("trip")
         }
     }
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; buildConfig = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
