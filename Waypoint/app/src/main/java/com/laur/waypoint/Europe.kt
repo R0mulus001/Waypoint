@@ -166,6 +166,20 @@ fun sunsetLocal(date: LocalDate, lat: Double, lng: Double, zone: ZoneId): String
 /** A built guide. [foodLater]: places to eat were still loading, so the guide was saved without them for now. */
 data class Built(val file: File, val foodLater: Boolean)
 
+/**
+ * Wikipedia articles about events, meetings and agreements still carry the map pin of where they happened
+ * ("Council of …", "Congress of …", "Treaty of …"), but there's nothing to visit, and their pictures are usually maps.
+ * Used when building a guide and when opening one built before this check existed.
+ */
+private val eventTitle = Regex("^(the )?(congress|council|concordat|conference|treaty|peace|siege|battle|synod|diet|convention|declaration|" +
+    "final act|union|compromise|settlement|accord|agreement|pact|alliance|summit|truce|armistice|capitulation|partition|sack|fire|flood|" +
+    "plague|riots?|uprising|revolution|massacre|bombing|negotiations|talks|award|protocol|charter|edict|decree|statute)s? of\\b",
+    RegexOption.IGNORE_CASE)
+private val eventDesc = Regex("ecumenical|church council|\\bsynod\\b|\\bconcordat\\b|\\bagreement\\b|\\baccord\\b|\\bcongress\\b(?! cent)|" +
+    "\\bconference\\b(?! cent| hall| venue)|negotiations|peace talks|\\bpact\\b", RegexOption.IGNORE_CASE)
+
+fun notAPlace(title: String, desc: String = ""): Boolean = eventTitle.containsMatchIn(title.replace('_', ' ')) || eventDesc.containsMatchIn(desc)
+
 class GuideBuilder(private val ctx: Context) {
     val dir = File(ctx.filesDir, "guides").apply { mkdirs() }
     /** Places-to-eat lookups still running for guides that were opened without them (see [refreshFood]). */
@@ -279,6 +293,7 @@ class GuideBuilder(private val ctx: Context) {
                 val isMuseum = museumRe.containsMatchIn(desc) || museumRe.containsMatchIn(title)
                 if (!isMuseum && (exclude.containsMatchIn(desc) || area.containsMatchIn(desc))) return@forEach
                 if (defunct.containsMatchIn(desc)) return@forEach   // "(1918–1928)": no longer exists
+                if (!isMuseum && notAPlace(title, desc)) return@forEach   // councils, congresses, treaties: nothing to visit
                 var views = 0L
                 pg.optJSONObject("pageviews")?.let { pv -> pv.keys().forEach { k -> if (!pv.isNull(k)) views += pv.optLong(k) } }
                 val cat = when { isMuseum -> "museum"; parkRe.containsMatchIn(desc) || parkRe.containsMatchIn(title) -> "park"; else -> "sight" }

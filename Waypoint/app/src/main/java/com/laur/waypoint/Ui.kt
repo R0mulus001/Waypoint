@@ -215,15 +215,39 @@ fun NoteLine(note: Note) {
     }
 }
 
+private fun mustSub(cat: String) = when (cat) {
+    "museum" -> "The most visited museums in ${Trip.city.name}"
+    "food" -> "The best-known places to eat in town"
+    else -> "What everyone comes to ${Trip.city.name} to see"
+}
+
+/** Heading of the "Don't miss" group (with a star) and of the list after it. */
 @Composable
-fun PlaceCard(ui: Ui, p: Place, here: LatLng?) {
+private fun MustSeeHead(title: String, sub: String, star: Boolean = true) {
+    val c = LocalPal.current
+    Row(Modifier.padding(top = 8.dp, start = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        if (star) Box(Modifier.size(32.dp).clip(CircleShape).background(c.accentSoft), contentAlignment = Alignment.Center) {
+            Icon(StarFilled, null, tint = c.accent, modifier = Modifier.size(18.dp))
+        }
+        Column {
+            T(title, Ty.bodyL, FontWeight.SemiBold, family = Fonts.display, modifier = Modifier.semantics { heading() })
+            T(sub, Ty.caption, color = c.muted)
+        }
+    }
+}
+
+@Composable
+fun PlaceCard(ui: Ui, p: Place, here: LatLng?, top: Boolean = false) {
     val c = LocalPal.current
     val st = ui.st
     val cat = Trip.catOf(p)
     val seen = st.isSeen(p.id)
-    Card(onClick = { ui.open = p.id }) {
+    // "Don't miss" places: an accent outline and a star, so they stand apart from the rest of the list.
+    val mark = if (top) Modifier.border(1.5.dp, c.accent.copy(alpha = if (seen) .35f else 1f), RoundedCornerShape(Rad.m)) else Modifier
+    Card(mark, onClick = { ui.open = p.id }) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (top) Icon(StarFilled, "Don't miss", tint = c.accent, modifier = Modifier.size(16.dp))
                 Tag(Trip.label(cat), icon = catIcon(cat))
                 if (Trip.priceText(p).isNotEmpty()) T(Trip.priceText(p), Ty.label, FontWeight.Medium, c.muted)
                 Spacer(Modifier.weight(1f))
@@ -252,8 +276,11 @@ fun NearbyTab(ui: Ui, now: Now, here: LatLng?, hasGps: Boolean, locationOn: Bool
     var showN by remember { mutableIntStateOf(12) }
     val (mo, pick) = heroPick(st, now, here, ui.skipped.value)
 
-    var list = Trip.PLACES.filter { p -> filter == "all" || (if (filter == "free") Trip.isFree(p) else Trip.catOf(p) == filter) }
-    if (!st.showSeen) list = list.filter { !st.isSeen(it.id) }
+    // Sights, museums and restaurants open with their best-known places; the rest follow, closest first.
+    var must = mustSees(filter)
+    val mustIds = must.map { it.id }.toSet()
+    var list = Trip.PLACES.filter { p -> p.id !in mustIds && (filter == "all" || (if (filter == "free") Trip.isFree(p) else Trip.catOf(p) == filter)) }
+    if (!st.showSeen) { list = list.filter { !st.isSeen(it.id) }; must = must.filter { !st.isSeen(it.id) } }
     list = sortNear(list, here)
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = listPad, verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -277,7 +304,14 @@ fun NearbyTab(ui: Ui, now: Now, here: LatLng?, hasGps: Boolean, locationOn: Bool
             }
         }
         if (here == null && !away) item { WarnNote(listOf("" to "Turn on location, or pick where you are above, to sort places by distance.")) }
-        if (list.isEmpty()) item {
+        if (must.isNotEmpty()) {
+            item(key = "must-head") { MustSeeHead("Don't miss", mustSub(filter)) }
+            items(must, key = { "must-" + it.id }) { PlaceCard(ui, it, here, top = true) }
+            if (list.isNotEmpty()) item(key = "more-head") {
+                MustSeeHead(if (filter == "food") "More places to eat" else "More to explore", if (away) "Most important first" else "Closest first", star = false)
+            }
+        }
+        if (list.isEmpty() && must.isEmpty()) item {
             T("Nothing left in this category. Show visited places to see them again.", Ty.body, color = c.muted, align = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp))
         }

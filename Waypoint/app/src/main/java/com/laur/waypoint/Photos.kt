@@ -304,7 +304,7 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
             val text = if (ex.isNotBlank() && pg.optJSONObject("pageprops")?.has("disambiguation") != true) ex to pg.optString("fullurl") else null
             val picked = LinkedHashMap<String, String>()
             fun add(u: String) { val n = fileName(u); if (n.isNotBlank() && !picked.containsKey(n)) picked[n] = u }
-            pg.optJSONObject("thumbnail")?.optString("source")?.takeIf { it.isNotBlank() }?.let(::add)
+            pg.optJSONObject("thumbnail")?.optString("source")?.takeIf { it.isNotBlank() && leadOk(it) }?.let(::add)
             // Articles also show other buildings (comparisons, "see also", boxes at the bottom): only pictures named after this place.
             val toks = placeTokens(chunk.first { it.id == id }, t)
             cand[id]?.filter { matches(it, toks) }?.forEach { f -> info[f]?.let(::add) }
@@ -323,14 +323,29 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
         "signature|locator|seal|emblem|stamps?|banknotes?|coins?|chart|graph|poster|book[ _]cover|award|medal|scheme|location|button|arrow|" +
         "sketch|drawings?|engraving|lithograph)(?![a-z])", RegexOption.IGNORE_CASE)
 
+    /** Maps and plans named in one word, as German and other languages do ("Stadtplan", "Übersichtskarte", "Lageplan"). */
+    private val mapWords = Regex("(stadt|lage|grund|uber|ubersichts|land|welt|orts|bezirks|strassen|stra(ss|ß)en)(plan|karte|riss)|grundriss|" +
+        "(?<![a-z])atlas(?![a-z])|cartograph|location[ _-]?map|relief[ _-]?map|blank[ _-]?map|outline[ _-]?map", RegexOption.IGNORE_CASE)
+
     private fun usable(title: String, mime: String, w: Int, h: Int): Boolean =
-        Regex("jpeg|webp").containsMatchIn(mime) && w >= 600 && h >= 400 && w.toFloat() / h in 0.6f..2.6f && !junk.containsMatchIn(title)
+        Regex("jpeg|webp").containsMatchIn(mime) && w >= 600 && h >= 400 && w.toFloat() / h in 0.6f..2.6f && !junk.containsMatchIn(title) &&
+            !mapWords.containsMatchIn(plain(title))
 
     /** The photo at the top of the place's Wikipedia article: almost always the landmark itself. */
     private fun leadImage(title: String): String? {
         val pg = firstPage(JSONObject(get("https://en.wikipedia.org/w/api.php?action=query&format=json&redirects=1&prop=pageimages&piprop=thumbnail&pithumbsize=960&titles=" +
             enc(title.replace('_', ' '))))) ?: return null
-        return pg.optJSONObject("thumbnail")?.optString("source")?.takeIf { it.isNotBlank() }
+        return pg.optJSONObject("thumbnail")?.optString("source")?.takeIf { it.isNotBlank() && leadOk(it) }
+    }
+
+    /**
+     * The lead picture of an article is not always a photo: for history topics, districts or lesser places it is
+     * often a map, a plan or a drawing (a map at the top of "Council of …", say). Only real photos count:
+     * a JPEG or WebP file (maps and drawings are SVG or PNG) whose name doesn't say it's a map, plan, logo and so on.
+     */
+    private fun leadOk(url: String): Boolean {
+        val f = fileName(url)
+        return Regex("\\.(jpe?g|webp)$").containsMatchIn(f) && !junk.containsMatchIn(f) && !mapWords.containsMatchIn(f)
     }
 
     /** Photos used inside the place's own Wikipedia article: chosen by editors, so they show the right place. */

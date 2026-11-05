@@ -60,14 +60,17 @@ class City(j: JSONObject) {
     val rules = j.getJSONArray("rules").objects().map {
         Rule(if (it.has("dow")) it.getInt("dow") else null, it.optJSONArray("stops")?.strings() ?: emptyList(), it.getString("bold"), it.getString("text"))
     }
+    val wiki = j.getJSONObject("wiki").strMap()
+    /** Built guides made before the check for events ("Council of …") may still list them: they're left out here. */
+    private fun visitable(p: Place) = !generated || p.kinds.isNotEmpty() || !notAPlace(wiki[p.id] ?: p.name, p.desc.removeSuffix("."))
     val themes = j.getJSONArray("themes").objects().map { t ->
-        Theme(t.getString("key"), t.getString("name"), t.getString("blurb"), t.getJSONArray("stops").objects().map(::place))
-    }
+        Theme(t.getString("key"), t.getString("name"), t.getString("blurb"), t.getJSONArray("stops").objects().map(::place).filter(::visitable))
+    }.filter { it.stops.isNotEmpty() }
     val themeMap = themes.associateBy { it.key }
     /** Only theme keys that really exist, so screens can look them up without crashing. */
     val themeOrder = j.getJSONArray("themeOrder").strings().filter { it in themeMap }.ifEmpty { themes.map { it.key } }
     val defOrder = j.getJSONArray("defOrder").strings().filter { it in themeMap }.ifEmpty { themeOrder }
-    private val extra = j.getJSONArray("extra").objects().map(::place)
+    private val extra = j.getJSONArray("extra").objects().map(::place).filter(::visitable)
     val food = j.getJSONArray("food").objects().map(::place)
     val cost: Map<String, Cost> = j.getJSONObject("cost").let { o ->
         o.keys().asSequence().associateWith { k ->
@@ -79,7 +82,6 @@ class City(j: JSONObject) {
     private val cat = j.getJSONObject("cat").strMap()
     val catLabel = j.getJSONObject("catLabel").strMap()
     val price = j.getJSONArray("price").strings()
-    val wiki = j.getJSONObject("wiki").strMap()
     val commons = j.getJSONObject("commons").strMap()
     val holidays = j.getJSONObject("holidays").strMap()
     /** Always 12 entries (one per month) in HH:mm, so indexing by month is safe. */
@@ -87,7 +89,9 @@ class City(j: JSONObject) {
         List(12) { m -> s.getOrNull(m)?.takeIf { Regex("\\d{1,2}:\\d{2}").matches(it) } ?: "18:00" }
     }
     val lit = j.getJSONArray("lit").strings().toSet()
-    val landmarks = j.getJSONArray("landmarks").arrays().map { it.getString(0) to it.getString(1) }
+    private val landmarkList = j.getJSONArray("landmarks").arrays().map { it.getString(0) to it.getString(1) }
+    /** Places to pick as "where I am"; only ones still in the guide. */
+    val landmarks by lazy { landmarkList.filter { it.first in byId || !generated } }
     val filters = j.getJSONArray("filters").arrays().map { it.getString(0) to it.getString(1) }
 
     /** Every place once: extra places, then the first version from the themes, then food (same order as the web apps). */

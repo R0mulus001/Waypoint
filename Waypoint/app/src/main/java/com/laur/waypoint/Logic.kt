@@ -95,6 +95,21 @@ fun heroPick(st: TripState, now: Now, here: LatLng?, skipped: Set<String>): Pair
     return mo to sortNear(c, here).firstOrNull()
 }
 
+/** Categories whose list opens with a "Don't miss" group. */
+val MUST_SEE_CATS = mapOf("sight" to 5, "museum" to 3, "food" to 5)
+
+/**
+ * The best-known places of a category, best first. Guides keep each category in order of fame
+ * (Wikipedia page views for sights and museums, map details such as a Wikipedia link for restaurants),
+ * so these are simply the first ones. Never more than half the category, so a "more" list is left.
+ */
+fun mustSees(cat: String): List<Place> {
+    val n = MUST_SEE_CATS[cat] ?: return emptyList()
+    val all = Trip.PLACES.filter { Trip.catOf(it) == cat }
+    if (all.size < 4) return emptyList()
+    return all.take(minOf(n, all.size / 2))
+}
+
 /** Closest first; with no location, most important first (priority 1 before 2 and 3, otherwise the guide's order). */
 fun sortNear(list: List<Place>, here: LatLng?): List<Place> = if (here == null) list.sortedBy { it.pri } else list.sortedBy { km(here, it) }
 
