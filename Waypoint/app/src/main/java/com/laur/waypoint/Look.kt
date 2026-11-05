@@ -26,12 +26,7 @@ data class Pal(
     val scrim: Color, val dark: Boolean,
     /** Accent for actions on the inverse (snackbar) surface. */
     val inverseAccent: Color = Color.Unspecified,
-) {
-    // Older names, kept so every screen reads the same tokens.
-    val food get() = visited
-    val foodSoft get() = visitedSoft
-    val warn get() = caution
-}
+)
 
 val LightPal = Pal(
     bg = Color(0xFFF1F3F6), surface = Color(0xFFFFFFFF), surface2 = Color(0xFFE7EAEF), fg = Color(0xFF15181D),
