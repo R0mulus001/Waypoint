@@ -2,36 +2,40 @@ package com.laur.waypoint
 
 import android.content.Context
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -47,9 +51,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
@@ -122,36 +130,46 @@ private fun openOrBuild(stores: CityStores, code: String, name: String, wiki: St
     else go(Screen.Build(code, name, wiki, at))
 }
 
+/** Bottom inset of the navigation bar, so lists scroll under it (edge to edge) but end above it. */
 @Composable
-fun BrandMark(size: Int = 34) {
+fun navBottom(): Dp = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+
+/** Waypoint's own mark: the pin on Waypoint blue. Only on Waypoint's own screens. */
+@Composable
+fun BrandMark(size: Int = 32) {
     val c = LocalPal.current
-    Box(Modifier.size(size.dp).clip(CircleShape).background(c.accent), contentAlignment = Alignment.Center) {
-        Icon(PinIcon, null, tint = c.accentFg, modifier = Modifier.size((size * 0.62f).dp))
+    Box(Modifier.size(size.dp).clip(RoundedCornerShape((size * 0.28f).dp)).background(c.accent), contentAlignment = Alignment.Center) {
+        Icon(PinIcon, null, tint = c.accentFg, modifier = Modifier.size((size * 0.6f).dp))
+    }
+}
+
+/** A Waypoint screen: top app bar, then a scrolling list that runs under the navigation bar. */
+@Composable
+private fun HubPage(title: @Composable () -> Unit, onBack: (() -> Unit)?, gap: Dp = 8.dp, content: LazyListScope.() -> Unit) {
+    val c = LocalPal.current
+    Column(Modifier.fillMaxSize().background(c.bg).imePadding()) {
+        AppBar(onBack = onBack, title = title)
+        LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 32.dp + navBottom()),
+            verticalArrangement = Arrangement.spacedBy(gap), content = content)
     }
 }
 
 @Composable
-private fun TopBar(title: String, onBack: (() -> Unit)?, lead: @Composable () -> Unit = { BrandMark() }) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        if (onBack != null) BackButton(onBack)
-        lead()
-        T(title, 25.sp, FontWeight.SemiBold, family = Fonts.display, modifier = Modifier.weight(1f), maxLines = 1)
-        ThemePill()
+private fun BigTitle(text: String, sub: String? = null) {
+    Column(Modifier.padding(top = 4.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        T(text, Ty.display, FontWeight.SemiBold, family = Fonts.display, modifier = Modifier.semantics { heading() })
+        if (!sub.isNullOrBlank()) T(sub, Ty.bodyS, color = LocalPal.current.muted)
     }
 }
 
 @Composable
-fun BackButton(onBack: () -> Unit) {
-    val c = LocalPal.current
-    Box(Modifier.size(40.dp).clip(CircleShape).background(c.surface).border(1.dp, c.line, CircleShape).clickable { onBack() },
-        contentAlignment = Alignment.Center) {
-        T("‹", 24.sp, FontWeight.SemiBold, modifier = Modifier.padding(bottom = 3.dp))
-    }
-}
+private fun SectionLabel(text: String, color: Color) =
+    Label(text, color, Modifier.padding(start = 4.dp, top = 12.dp, bottom = 6.dp))
+
+private val UpChevron = icon("M6 15l6-6 6 6")
 
 // ---------- My trips ----------
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun HomeScreen(stores: CityStores, onAdd: () -> Unit) {
     val c = LocalPal.current
@@ -169,73 +187,66 @@ fun HomeScreen(stores: CityStores, onAdd: () -> Unit) {
     val recent = byWhen[TripWhen.Recent].orEmpty()
     val older = byWhen[TripWhen.Older].orEmpty()
 
-    LazyColumn(Modifier.fillMaxSize().background(c.bg), contentPadding = PaddingValues(16.dp, 16.dp, 16.dp, 28.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { TopBar("Waypoint", null) }
+    HubPage(title = {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            BrandMark(); T("Waypoint", Ty.headline, FontWeight.SemiBold, family = Fonts.display)
+        }
+    }, onBack = null, gap = 0.dp) {
         item {
-            Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    T("Your trips", 22.sp, FontWeight.SemiBold, family = Fonts.display)
-                    T(when {
+            Row(verticalAlignment = Alignment.Bottom) {
+                Box(Modifier.weight(1f)) {
+                    BigTitle("Your trips", when {
                         trips.isEmpty() -> "Add a trip to get started."
                         arranging -> "Use the arrows to move trips. Your order is saved."
                         else -> "Tap a city to open it. Long-press to remove it."
-                    }, 14.sp, color = c.muted)
+                    })
                 }
-                if (trips.size > 1) T(if (arranging) "Done" else "Arrange", 15.sp, FontWeight.SemiBold, c.accent,
-                    modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { arranging = !arranging }.padding(horizontal = 10.dp, vertical = 8.dp))
+                if (trips.size > 1) TextButton(onClick = { arranging = !arranging }, modifier = Modifier.padding(bottom = 4.dp)) {
+                    Text(if (arranging) "Done" else "Arrange", fontWeight = FontWeight.SemiBold, color = c.accent)
+                }
             }
         }
-        @Composable
-        fun row(city: City, section: List<City>, isNow: Boolean = false) {
-            val i = section.indexOf(city)
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Box(Modifier.weight(1f).combinedClickable(onClick = { Hub.open(city.key) }, onLongClick = { removing = city })) { TripCard(stores, city, isNow) }
-                if (arranging) Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    MoveBtn("▲", i > 0) { Hub.swapTrips(city.key, section[i - 1].key) }
-                    MoveBtn("▼", i < section.size - 1) { Hub.swapTrips(city.key, section[i + 1].key) }
-                }
+        fun section(key: String, title: String?, list: List<City>, isNow: Boolean = false) {
+            if (list.isEmpty()) return
+            if (title != null) item(key = "h-$key") { SectionLabel(title, if (isNow) c.accent else c.muted) }
+            itemsIndexed(list, key = { _, it -> it.key }) { i, city ->
+                TripRow(stores, city, i, list.size, isNow, arranging,
+                    onOpen = { Hub.open(city.key) }, onRemove = { removing = city },
+                    onUp = if (i > 0) ({ Hub.swapTrips(city.key, list[i - 1].key) }) else null,
+                    onDown = if (i < list.size - 1) ({ Hub.swapTrips(city.key, list[i + 1].key) }) else null)
             }
         }
         // Recent trips always come first, right under "Your trips".
-        if (recent.isNotEmpty()) {
-            item(key = "h-recent") { Label("Recent trips", modifier = Modifier.padding(top = 4.dp)) }
-            items(recent, key = { it.key }) { row(it, recent) }
-        }
-        if (now.isNotEmpty()) {
-            item(key = "h-now") { Label("Happening now", c.accent, Modifier.padding(top = 4.dp)) }
-            items(now, key = { it.key }) { row(it, now, isNow = true) }
-        }
-        if (ahead.isNotEmpty()) {
-            if (now.isNotEmpty() || recent.isNotEmpty()) item(key = "h-ahead") { Label("Coming up", modifier = Modifier.padding(top = 4.dp)) }
-            items(ahead, key = { it.key }) { row(it, ahead) }
-        }
+        section("recent", "Recent trips", recent)
+        section("now", "Happening now", now, isNow = true)
+        section("ahead", if (now.isNotEmpty() || recent.isNotEmpty()) "Coming up" else null, ahead)
         if (older.isNotEmpty()) {
             item(key = "h-older") {
-                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { showOlder = !showOlder }.padding(vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically) {
-                    Label("Older than 10 months (${older.size})", modifier = Modifier.weight(1f))
-                    T(if (showOlder) "Hide" else "Show ›", 14.sp, FontWeight.SemiBold, c.accent)
+                Row(Modifier.fillMaxWidth().padding(top = 12.dp).clip(RoundedCornerShape(Rad.s)).clickable { showOlder = !showOlder }
+                    .heightIn(min = 48.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    T("Older than 10 months (${older.size})", Ty.bodyS, FontWeight.SemiBold, c.muted, modifier = Modifier.weight(1f).semantics { heading() })
+                    T(if (showOlder) "Hide" else "Show", Ty.bodyS, FontWeight.SemiBold, c.accent)
+                    Icon(if (showOlder) UpChevron else DownIcon, null, tint = c.accent, modifier = Modifier.padding(start = 4.dp).size(18.dp))
                 }
             }
-            if (showOlder) items(older, key = { it.key }) { row(it, older) }
+            if (showOlder) section("older", null, older)
         }
-        item { Btn("+  Plan a new trip", Modifier.fillMaxWidth()) { onAdd() } }
+        item { Btn("Plan a new trip", Modifier.fillMaxWidth().padding(top = 20.dp), icon = PlusIcon) { onAdd() } }
         item {
-            Column(Modifier.padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                T("Your travel diary", 20.sp, FontWeight.SemiBold, family = Fonts.display)
-                val n = diary.map { it.first.key }.toSet().size
-                T(if (diary.isEmpty()) "Places you visit in any city show up here." else "${diary.size} place" + (if (diary.size == 1) "" else "s") +
-                    " visited in $n cit" + (if (n == 1) "y" else "ies"), 14.sp, color = c.muted)
-            }
+            val n = diary.map { it.first.key }.toSet().size
+            SectionHead("Your travel diary",
+                if (diary.isEmpty()) "Places you visit in any city show up here." else "${diary.size} place" + (if (diary.size == 1) "" else "s") +
+                    " visited in $n cit" + (if (n == 1) "y" else "ies"),
+                Modifier.padding(start = 4.dp, top = 32.dp, bottom = 12.dp))
         }
-        items(diary.take(12), key = { "d-" + it.first.key + "|" + it.second.id }) { (city, p, at) ->
-            Card(Modifier.clickable { Hub.open(city.key); stores.state(city).setTab("visited") }) {
-                Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        val shown = diary.take(12)
+        itemsIndexed(shown, key = { _, it -> "d-" + it.first.key + "|" + it.second.id }) { i, (city, p, at) ->
+            GroupRow(i, shown.size, onClick = { Hub.open(city.key); stores.state(city).setTab("visited") }, dividerInset = 64.dp) {
+                Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     FlagTile(codeOf(city), 36.dp, label = city.country)
                     Column(Modifier.weight(1f)) {
-                        T(p.name, 15.5.sp, FontWeight.SemiBold, maxLines = 1)
-                        T(city.name + " · " + visitedWhen(at, city), 13.sp, color = c.muted)
+                        T(p.name, Ty.body, FontWeight.Medium, maxLines = 1)
+                        T(city.name + " · " + visitedWhen(at, city), Ty.label, color = c.muted)
                     }
                     Stars(stores.state(city).note(p.id).stars)
                 }
@@ -269,44 +280,46 @@ fun whenOf(stores: CityStores, city: City): TripWhen {
     }
 }
 
+/** One trip: the city tile (flag + pin), name, country and dates in the city's own colour. */
 @Composable
-private fun MoveBtn(label: String, enabled: Boolean, onClick: () -> Unit) {
-    val c = LocalPal.current
-    Box(Modifier.size(40.dp).clip(CircleShape).background(c.surface).border(1.dp, c.line, CircleShape)
-        .then(if (enabled) Modifier.clickable { onClick() } else Modifier), contentAlignment = Alignment.Center) {
-        T(label, 15.sp, FontWeight.SemiBold, if (enabled) c.fg else c.line)
-    }
-}
-
-@Composable
-private fun TripCard(stores: CityStores, city: City, now: Boolean = false) {
+private fun TripRow(stores: CityStores, city: City, i: Int, n: Int, now: Boolean, arranging: Boolean,
+                    onOpen: () -> Unit, onRemove: () -> Unit, onUp: (() -> Unit)?, onDown: (() -> Unit)?) {
     val c = LocalPal.current
     val st = stores.state(city)
-    val accent = Color(if (c.dark) city.accent.dark else city.accent.light)
+    val accent = cityAccent(city, c.dark)
     val dates = if (st.start.isBlank()) "Trip dates not set" else tripLabel(tripDays(st.start, st.len))
     val visited = st.visited.size
-    // The trip you're on now gets an outline in its own colour.
-    Card(if (now) Modifier.border(2.dp, accent, RoundedCornerShape(14.dp)) else Modifier) {
-        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+    GroupRow(i, n, onClick = if (arranging) null else onOpen, onLongClick = if (arranging) null else onRemove, dividerInset = 84.dp) {
+        Row(Modifier.padding(start = 16.dp, end = 8.dp, top = 14.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             FlagTile(codeOf(city), 52.dp, label = city.country)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    T(city.name, 21.sp, FontWeight.SemiBold, family = Fonts.display, maxLines = 1, modifier = Modifier.weight(1f, fill = false))
-                    if (!city.generated) GuideBadge()
+                    T(city.name, 22.sp, FontWeight.SemiBold, family = Fonts.display, maxLines = 2, modifier = Modifier.weight(1f, fill = false))
+                    if (now) NowDot(accent)
+                    if (!city.generated) Tag("Full guide")
                 }
-                T(city.country + " · " + city.tagline, 13.5.sp, color = c.muted, maxLines = 1)
-                T(dates + (if (visited > 0) " · $visited visited" else ""), 13.5.sp, FontWeight.SemiBold, accent)
+                T(city.country + " · " + city.tagline, Ty.label, color = c.muted, maxLines = 1)
+                T(dates + (if (visited > 0) " · $visited visited" else ""), Ty.label, FontWeight.SemiBold, accent)
             }
-            T("›", 26.sp, color = c.muted)
+            if (arranging) Column {
+                IconButton(onClick = { onUp?.invoke() }, enabled = onUp != null) {
+                    Icon(UpIcon, "Move ${city.name} up", tint = if (onUp != null) c.fg else c.line)
+                }
+                IconButton(onClick = { onDown?.invoke() }, enabled = onDown != null) {
+                    Icon(DownArrowIcon, "Move ${city.name} down", tint = if (onDown != null) c.fg else c.line)
+                }
+            } else Icon(ChevronIcon, null, tint = c.muted, modifier = Modifier.padding(end = 8.dp).size(20.dp))
         }
     }
 }
 
+/** "You're on this trip now": a dot in the city's colour, with the word too (not colour alone). */
 @Composable
-private fun GuideBadge() {
-    val c = LocalPal.current
-    Box(Modifier.clip(RoundedCornerShape(5.dp)).background(c.foodSoft).padding(horizontal = 6.dp, vertical = 1.dp)) {
-        T("FULL GUIDE", 10.5.sp, FontWeight.SemiBold, c.food, letterSpacing = 0.6.sp)
+private fun NowDot(color: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        Box(Modifier.size(8.dp).clip(CircleShape).background(color))
+        T("Now", Ty.caption, FontWeight.SemiBold, color)
     }
 }
 
@@ -315,13 +328,17 @@ private fun GuideBadge() {
 @Composable
 private fun SearchField(value: String, hint: String, onChange: (String) -> Unit, onSearch: (() -> Unit)? = null) {
     val c = LocalPal.current
-    val shape = RoundedCornerShape(12.dp)
-    Box(Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(shape).background(c.surface).border(1.dp, c.line, shape).padding(horizontal = 14.dp, vertical = 13.dp)) {
-        if (value.isEmpty()) T(hint, 15.sp, color = c.muted)
-        BasicTextField(value, onChange, singleLine = true, modifier = Modifier.fillMaxWidth(),
-            textStyle = TextStyle(fontSize = 15.sp, color = c.fg, fontFamily = Fonts.body), cursorBrush = SolidColor(c.accent),
-            keyboardOptions = KeyboardOptions(imeAction = if (onSearch != null) ImeAction.Search else ImeAction.Done),
-            keyboardActions = KeyboardActions(onSearch = { onSearch?.invoke() }))
+    Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).clip(RoundedCornerShape(Rad.m)).background(c.surface).padding(start = 14.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Icon(SearchIcon, null, tint = c.muted, modifier = Modifier.size(20.dp))
+        Box(Modifier.weight(1f).padding(vertical = 14.dp)) {
+            if (value.isEmpty()) T(hint, Ty.body, color = c.muted, maxLines = 1)
+            BasicTextField(value, onChange, singleLine = true, modifier = Modifier.fillMaxWidth().semantics { contentDescription = hint },
+                textStyle = TextStyle(fontSize = Ty.body, color = c.fg, fontFamily = Fonts.body), cursorBrush = SolidColor(c.accent),
+                keyboardOptions = KeyboardOptions(imeAction = if (onSearch != null) ImeAction.Search else ImeAction.Done),
+                keyboardActions = KeyboardActions(onSearch = { onSearch?.invoke() }))
+        }
+        if (value.isNotEmpty()) IconBtn(CloseIcon, "Clear search", c.muted) { onChange("") }
     }
 }
 
@@ -331,28 +348,22 @@ fun CountriesScreen(onBack: () -> Unit, onPick: (Country) -> Unit) {
     var q by remember { mutableStateOf("") }
     BackHandler { onBack() }
     val list = Europe.countries.filter { q.isBlank() || plainText(it.name).contains(plainText(q)) || it.cities.any { ct -> plainText(ct.name).contains(plainText(q)) } }
-    LazyColumn(Modifier.fillMaxSize().background(c.bg), contentPadding = PaddingValues(16.dp, 16.dp, 16.dp, 28.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        item { TopBar("Plan a trip", onBack) }
-        item {
-            Column(Modifier.padding(top = 8.dp, bottom = 4.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                T("Which country?", 22.sp, FontWeight.SemiBold, family = Fonts.display)
-                SearchField(q, "Search countries or cities", { q = it })
-            }
-        }
-        items(list, key = { it.code }) { co ->
-            Card(Modifier.clickable { onPick(co) }) {
-                Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    T(co.emoji, 26.sp)
+    HubPage(title = { T("Plan a trip", Ty.headline, FontWeight.SemiBold, family = Fonts.display) }, onBack = onBack, gap = 0.dp) {
+        item { BigTitle("Which country?") }
+        item { Box(Modifier.padding(bottom = 16.dp)) { SearchField(q, "Search countries or cities", { q = it }) } }
+        itemsIndexed(list, key = { _, it -> it.code }) { i, co ->
+            GroupRow(i, list.size, onClick = { onPick(co) }, dividerInset = 68.dp) {
+                Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    FlagRect(co.code, 36.dp)
                     Column(Modifier.weight(1f)) {
-                        T(co.name, 16.5.sp, FontWeight.SemiBold)
-                        T(co.cities.take(3).joinToString(", ") { it.name } + (if (co.cities.size > 3) "…" else ""), 13.sp, color = c.muted, maxLines = 1)
+                        T(co.name, Ty.bodyL, FontWeight.Medium)
+                        T(co.cities.take(3).joinToString(", ") { it.name } + (if (co.cities.size > 3) "…" else ""), Ty.label, color = c.muted, maxLines = 1)
                     }
-                    T("›", 24.sp, color = c.muted)
+                    Icon(ChevronIcon, null, tint = c.muted, modifier = Modifier.size(20.dp))
                 }
             }
         }
-        if (list.isEmpty()) item { T("No country matches \"$q\".", 15.sp, color = c.muted, modifier = Modifier.padding(16.dp)) }
+        if (list.isEmpty()) item { T("No country matches \"$q\".", Ty.body, color = c.muted, modifier = Modifier.padding(16.dp)) }
     }
 }
 
@@ -378,49 +389,55 @@ fun CitiesScreen(stores: CityStores, co: Country, onBack: () -> Unit, onPick: (C
             }
         }
     }
-    LazyColumn(Modifier.fillMaxSize().background(c.bg), contentPadding = PaddingValues(16.dp, 16.dp, 16.dp, 28.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        item { TopBar(co.name, onBack) { T(co.emoji, 26.sp) } }
+    HubPage(title = {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            FlagRect(co.code, 30.dp); T(co.name, Ty.headline, FontWeight.SemiBold, family = Fonts.display, maxLines = 1)
+        }
+    }, onBack = onBack, gap = 0.dp) {
+        item { BigTitle("Which city?") }
         item {
-            Column(Modifier.padding(top = 8.dp, bottom = 4.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                T("Which city?", 22.sp, FontWeight.SemiBold, family = Fonts.display)
+            Column(Modifier.padding(bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 SearchField(q, "Search any city or town in ${co.name}", { q = it; if (it.isBlank()) { hits = null; error = null } }, search)
-                if (q.isNotBlank()) Btn(if (searching) "Searching…" else "Search online for \"${q.trim()}\"", Modifier.fillMaxWidth(), BtnKind.Ghost, small = true) { search() }
-                error?.let { T(it, 14.sp, color = c.warn) }
+                if (q.isNotBlank()) Btn(if (searching) "Searching…" else "Search online for \"${q.trim()}\"", Modifier.fillMaxWidth(), BtnKind.Tonal, icon = SearchIcon) { search() }
+                error?.let { T(it, Ty.bodyS, color = c.caution) }
             }
         }
         hits?.let { hs ->
-            if (hs.isNotEmpty()) item { Label("Search results") }
-            items(hs, key = { "h-" + it.name + "|" + it.lat + "|" + it.lng }) { h ->
-                CityRow(h.name, h.detail, stores.find(co.code.lowercase() + "-" + slug(h.name)) != null, false) { onPickHit(h) }
+            if (hs.isNotEmpty()) item { SectionLabel("Search results", c.muted) }
+            itemsIndexed(hs, key = { _, it -> "h-" + it.name + "|" + it.lat + "|" + it.lng }) { i, h ->
+                CityRow(i, hs.size, h.name, h.detail, stores.find(co.code.lowercase() + "-" + slug(h.name)) != null, false) { onPickHit(h) }
             }
         }
-        item { Label("Big cities", modifier = Modifier.padding(top = 8.dp)) }
-        items(co.cities, key = { "c-" + it.name }) { ref ->
+        item { SectionLabel("Big cities", c.muted) }
+        itemsIndexed(co.cities, key = { _, it -> "c-" + it.name }) { i, ref ->
             val key = ref.guide ?: (co.code.lowercase() + "-" + slug(ref.name))
-            CityRow(ref.name, null, stores.find(key) != null, ref.guide != null) { onPick(ref) }
+            CityRow(i, co.cities.size, ref.name, null, stores.find(key) != null, ref.guide != null) { onPick(ref) }
         }
         item {
             T("Picking a city builds its guide from Wikipedia and OpenStreetMap the first time. It takes under a minute and needs internet.",
-                12.5.sp, color = c.muted, modifier = Modifier.padding(top = 8.dp))
+                Ty.caption, color = c.muted, modifier = Modifier.padding(start = 4.dp, end = 4.dp, top = 16.dp))
         }
     }
 }
 
 @Composable
-private fun CityRow(name: String, detail: String?, ready: Boolean, full: Boolean, onClick: () -> Unit) {
+private fun CityRow(i: Int, n: Int, name: String, detail: String?, ready: Boolean, full: Boolean, onClick: () -> Unit) {
     val c = LocalPal.current
-    Card(Modifier.clickable { onClick() }) {
-        Row(Modifier.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    GroupRow(i, n, onClick = onClick) {
+        Row(Modifier.heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    T(name, 16.5.sp, FontWeight.SemiBold)
-                    if (full) GuideBadge()
+                    T(name, Ty.bodyL, FontWeight.Medium)
+                    if (full) Tag("Full guide")
                 }
-                if (detail != null) T(detail, 13.sp, color = c.muted, maxLines = 1)
-                else if (ready) T("Guide saved on your phone", 13.sp, color = c.food)
+                if (detail != null) T(detail, Ty.label, color = c.muted, maxLines = 1)
+                else if (ready) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Icon(CheckIcon, null, tint = c.muted, modifier = Modifier.size(14.dp))
+                    T("Guide saved on your phone", Ty.label, color = c.muted)
+                }
             }
-            T("›", 24.sp, color = c.muted)
+            Icon(ChevronIcon, null, tint = c.muted, modifier = Modifier.size(20.dp))
         }
     }
 }
@@ -455,32 +472,30 @@ fun BuildScreen(stores: CityStores, s: Screen.Build, onBack: () -> Unit) {
             }
         }
     }
-    Column(Modifier.fillMaxSize().background(c.bg).padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            BackButton(onBack)
-            T(co.emoji, 30.sp)
+    Column(Modifier.fillMaxSize().background(c.bg)) {
+        AppBar(onBack = onBack) { FlagRect(co.code, 30.dp) }
+        if (error == null) LinearProgressIndicator(Modifier.fillMaxWidth(), color = c.accent, trackColor = c.surface2)
+        Column(Modifier.weight(1f).padding(horizontal = 24.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            T("Building your ${s.name} guide", 30.sp, FontWeight.SemiBold, family = Fonts.display, modifier = Modifier.semantics { heading() })
+            T("Collecting sights, places to eat and drink, and day plans. This takes under a minute.", Ty.body, color = c.muted)
+            Spacer(Modifier.size(4.dp))
+            done.forEach { d ->
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Box(Modifier.size(24.dp).clip(CircleShape).background(c.accentSoft), contentAlignment = Alignment.Center) {
+                        Icon(CheckIcon, null, tint = c.accent, modifier = Modifier.size(14.dp))
+                    }
+                    T(d, Ty.body, color = c.muted)
+                }
+            }
+            if (error == null) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(18.dp), color = c.accent, strokeWidth = 2.dp) }
+                T(step, Ty.body, FontWeight.SemiBold)
+            }
+            error?.let {
+                Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(Rad.m)).background(c.cautionSoft).padding(16.dp)) { T(it, Ty.body, color = c.fg) }
+                Btn("Try again", Modifier.fillMaxWidth()) { attempt++ }
+                Btn("Pick another city", Modifier.fillMaxWidth(), BtnKind.Ghost) { onBack() }
+            }
         }
-        T("Building your ${s.name} guide", 28.sp, FontWeight.SemiBold, family = Fonts.display)
-        T("Collecting sights, places to eat and drink, and day plans. This takes under a minute.", 15.sp, color = c.muted)
-        Column(Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            done.forEach { T("✓  $it", 15.5.sp, FontWeight.Medium, c.food) }
-            if (error == null) T("…  $step", 15.5.sp, FontWeight.SemiBold, c.accent)
-        }
-        error?.let {
-            T(it, 15.sp, color = c.warn)
-            Btn("Try again", Modifier.fillMaxWidth()) { attempt++ }
-            Btn("Pick another city", Modifier.fillMaxWidth(), BtnKind.Ghost) { onBack() }
-        }
-    }
-}
-
-@Composable
-fun ThemePill() {
-    val c = LocalPal.current
-    val label = when (Hub.themeMode) { "light" -> "Light"; "dark" -> "Dark"; else -> "Auto" }
-    Box(Modifier.clip(CircleShape).background(c.surface).border(1.dp, c.line, CircleShape)
-        .clickable { Hub.setThemeMode(when (Hub.themeMode) { "auto" -> "light"; "light" -> "dark"; else -> "auto" }) }
-        .padding(horizontal = 12.dp, vertical = 8.dp)) {
-        T(label, 13.sp, FontWeight.SemiBold)
     }
 }
