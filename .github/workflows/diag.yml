@@ -1,0 +1,12 @@
+name: Diag photos and routes
+on:
+  push:
+    branches: ["diag/**"]
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 .github/diag/diag.py "St. Stephen's Cathedral, Vienna" "Schönbrunn Palace" "Karlskirche" "Albertina" "Milan Cathedral" "Castello Sforzesco" "Café Central"
+        env:
+          MAPILLARY_TOKEN: ${{ secrets.MAPILLARY_TOKEN }}
