@@ -1,10 +1,17 @@
 package com.laur.waypoint
 
-import android.app.DatePickerDialog
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.selection.toggleable
@@ -425,7 +432,6 @@ fun WarnNote(parts: List<Pair<String, String>>) {
 fun PlansTab(ui: Ui, now: Now, here: LatLng?, hasGps: Boolean) {
     val c = LocalPal.current
     val st = ui.st
-    val ctx = LocalContext.current
     val days = tripDays(st.start.ifBlank { now.key }, st.len)
     val day = days.firstOrNull { it.key == st.day } ?: days.firstOrNull { it.key == now.key } ?: days.first()
     val tk = themeOf(st, days, day.key)
@@ -433,40 +439,36 @@ fun PlansTab(ui: Ui, now: Now, here: LatLng?, hasGps: Boolean) {
     val doneN = stops.count { st.isSeen(it.id) }
     val next = stops.firstOrNull { !st.isSeen(it.id) }
 
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = listPad, verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = listPad, verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item {
+            var picking by remember { mutableStateOf(false) }
+            var exp by remember { mutableStateOf(false) }
+            val sd = days.first()
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                T("Trip starts", 13.5.sp, color = c.muted)
-                val shape = RoundedCornerShape(9.dp)
-                val sd = days.first()
-                Box(Modifier.clip(shape).background(c.surface).border(1.dp, c.line, shape).clickable {
-                    val d = LocalDate.parse(sd.key)
-                    DatePickerDialog(ctx, { _, y, m, dd ->
-                        st.setStart(LocalDate.of(y, m + 1, dd).toString()); st.setDay("")
-                    }, d.year, d.monthValue - 1, d.dayOfMonth).show()
-                }.padding(horizontal = 10.dp, vertical = 7.dp)) { T("${sd.d} ${MON[sd.m].take(3)}", 14.sp) }
-                Spacer(Modifier.width(6.dp))
-                T("Days", 13.5.sp, color = c.muted)
-                var exp by remember { mutableStateOf(false) }
+                PickerChip("Starts ${sd.d} ${MON[sd.m].take(3)}", CalendarIcon, "Change when the trip starts") { picking = true }
                 Box {
-                    Box(Modifier.clip(shape).background(c.surface).border(1.dp, c.line, shape).clickable { exp = true }.padding(horizontal = 10.dp, vertical = 7.dp)) {
-                        T("${st.len}  ▾", 14.sp)
-                    }
+                    PickerChip("${st.len} day" + (if (st.len == 1) "" else "s"), null, "Change how many days") { exp = true }
                     DropdownMenu(exp, { exp = false }) {
-                        (1..7).forEach { n -> DropdownMenuItem(text = { Text("$n") }, onClick = { st.setLen(n); exp = false }) }
+                        (1..7).forEach { n ->
+                            DropdownMenuItem(text = { Text("$n day" + if (n == 1) "" else "s") }, onClick = { st.setLen(n); exp = false },
+                                trailingIcon = { if (n == st.len) Icon(CheckIcon, "Selected", tint = c.accent) })
+                        }
                     }
                 }
             }
+            if (picking) TripDatePicker(LocalDate.parse(sd.key), onPick = { st.setStart(it.toString()); st.setDay("") }, onDismiss = { picking = false })
         }
         item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 days.forEach { d ->
                     val on = d.key == day.key
-                    val shape = RoundedCornerShape(12.dp)
-                    Column(Modifier.weight(1f).clip(shape).background(if (on) c.accent else c.surface).border(1.dp, if (on) c.accent else c.line, shape)
-                        .clickable { st.setDay(d.key) }.padding(vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        T((if (d.key == now.key) "Today" else DOW[d.dow]).uppercase(), 11.sp, FontWeight.SemiBold, if (on) c.accentFg else c.muted, letterSpacing = .6.sp)
-                        T("${d.d}", 20.sp, FontWeight.SemiBold, if (on) c.accentFg else c.fg, Fonts.display)
+                    val isToday = d.key == now.key
+                    Column(Modifier.weight(1f).heightIn(min = 60.dp).clip(RoundedCornerShape(14.dp)).background(if (on) c.accent else c.surface)
+                        .selectable(selected = on, role = Role.Tab) { st.setDay(d.key) }
+                        .semantics { contentDescription = (if (isToday) "Today, " else "") + "${DOW[d.dow]} ${d.d} ${MON[d.m]}" }
+                        .padding(vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                        T(if (isToday) "Today" else DOW[d.dow], Ty.caption, FontWeight.SemiBold, if (on) c.accentFg else c.muted, maxLines = 1)
+                        T("${d.d}", 22.sp, FontWeight.SemiBold, if (on) c.accentFg else c.fg, Fonts.display)
                     }
                 }
                 repeat(maxOf(0, 4 - days.size)) { Spacer(Modifier.weight(1f)) }
@@ -475,29 +477,29 @@ fun PlansTab(ui: Ui, now: Now, here: LatLng?, hasGps: Boolean) {
         item {
             Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Label("Theme for this day", modifier = Modifier.weight(1f))
-                T("Swipe for more ›", 13.sp, FontWeight.SemiBold, c.muted)
+                T("Swipe for more", Ty.label, FontWeight.Medium, c.muted)
+                Icon(ChevronIcon, null, tint = c.muted, modifier = Modifier.size(16.dp))
             }
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.horizontalScroll(rememberScrollState()).selectableGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Trip.THEME_ORDER.mapNotNull { k -> Trip.THEME_MAP[k]?.let { k to it } }.forEach { (k, th) ->
                     val on = k == tk
-                    val shape = RoundedCornerShape(12.dp)
-                    Column(Modifier.width(150.dp).clip(shape).background(if (on) c.accentSoft else c.surface)
-                        .border(if (on) 2.dp else 1.dp, if (on) c.accent else c.line, shape).clickable { st.setTheme(day.key, k) }.padding(11.dp),
+                    val shape = RoundedCornerShape(Rad.m)
+                    Column(Modifier.width(164.dp).clip(shape).background(if (on) c.accentSoft else c.surface)
+                        .then(if (on) Modifier.border(2.dp, c.accent, shape) else Modifier)
+                        .selectable(selected = on, role = Role.RadioButton) { st.setTheme(day.key, k) }.padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        T(th.name, 14.5.sp, FontWeight.SemiBold, maxLines = 2)
-                        T(th.blurb, 12.5.sp, color = c.muted, maxLines = 2)
+                        T(th.name, Ty.bodyS, FontWeight.SemiBold, maxLines = 2)
+                        T(th.blurb, Ty.caption, color = c.muted, maxLines = 2)
                     }
                 }
             }
         }
         item {
-            Column {
-                T(Trip.THEME_MAP[tk]?.name.orEmpty(), 20.sp, FontWeight.SemiBold, family = Fonts.display)
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 val total = stops.sumOf { it.min }
-                T("$doneN of ${stops.size} done · about ${dur(Math.round(total / 30.0).toInt() * 30)} of visits, at your own pace", 14.sp, color = c.muted)
-                Box(Modifier.padding(top = 10.dp).fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(c.line)) {
-                    Box(Modifier.fillMaxWidth(if (stops.isEmpty()) 0f else doneN / stops.size.toFloat()).fillMaxHeight().clip(RoundedCornerShape(3.dp)).background(c.accent))
-                }
+                SectionHead(Trip.THEME_MAP[tk]?.name.orEmpty(),
+                    "$doneN of ${stops.size} done · about ${dur(Math.round(total / 30.0).toInt() * 30)} of visits, at your own pace")
+                Bar(if (stops.isEmpty()) 0f else doneN / stops.size.toFloat())
             }
         }
         val notes = dayNotes(day, stops)
@@ -505,64 +507,92 @@ fun PlansTab(ui: Ui, now: Now, here: LatLng?, hasGps: Boolean) {
         if (notes.size > 1) item {
             var openTips by remember(day.key) { mutableStateOf(false) }
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                val shape = RoundedCornerShape(10.dp)
-                Row(Modifier.fillMaxWidth().clip(shape).background(c.surface).border(1.dp, c.warn, shape).clickable { openTips = !openTips }
-                    .padding(horizontal = 12.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    T("${notes.size} tips for this day", 14.5.sp, FontWeight.SemiBold, c.warn, modifier = Modifier.weight(1f))
-                    T(if (openTips) "Hide" else "Show ›", 14.sp, FontWeight.SemiBold, c.warn)
+                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(Rad.m)).background(c.cautionSoft)
+                    .clickable(onClickLabel = if (openTips) "Hide tips" else "Show tips") { openTips = !openTips }
+                    .padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Icon(TipIcon, null, tint = c.caution, modifier = Modifier.size(20.dp))
+                    T("${notes.size} tips for this day", Ty.bodyS, FontWeight.SemiBold, c.fg, modifier = Modifier.weight(1f))
+                    T(if (openTips) "Hide" else "Show", Ty.bodyS, FontWeight.SemiBold, c.caution)
+                    Icon(if (openTips) UpChevronIcon else DownIcon, null, tint = c.caution, modifier = Modifier.size(18.dp))
                 }
                 if (openTips) notes.forEach { WarnNote(listOf(it)) }
             }
         }
         if (here != null) item {
-            Btn("Reorder from where I am", Modifier.fillMaxWidth(), BtnKind.Ghost) {
+            Btn("Reorder from where I am", Modifier.fillMaxWidth(), BtnKind.Ghost, icon = LocateIcon) {
                 st.setOrder(day.key + ":" + tk, reorderFromHere(stops, st, here))
             }
         }
         item {
-            Column {
-                stops.forEachIndexed { i, s -> StepRow(ui, i, s, s == next, here) }
+            Column(Modifier.clip(RoundedCornerShape(Rad.m)).background(c.surface).padding(vertical = 8.dp)) {
+                stops.forEachIndexed { i, s ->
+                    RouteStop(ui, i, s, isNext = s == next, here = here,
+                        prevDone = i > 0 && st.isSeen(stops[i - 1].id), first = i == 0, last = i == stops.size - 1)
+                }
             }
         }
         val ref = next ?: stops.lastOrNull()
         if (ref != null && Trip.FOOD.isNotEmpty()) {
-            item { Label("Eat near " + (next?.name ?: "your last stop")) }
+            item { Label("Eat near " + (next?.name ?: "your last stop"), modifier = Modifier.padding(top = 8.dp)) }
             items(eatNear(ref), key = { "eat-" + it.id }) { PlaceCard(ui, it, here) }
         }
-        item { T("No fixed times: tap Done when you finish a stop, or skip ahead. Done stops also count as visited on the other tabs.", 12.5.sp, color = c.muted) }
+        item {
+            T("No fixed times: mark a stop Visited when you finish it, or skip ahead. Visited stops count on the other tabs too.",
+                Ty.caption, color = c.muted, modifier = Modifier.padding(horizontal = 4.dp))
+        }
     }
 }
 
+private val UpChevronIcon = icon("M6 15l6-6 6 6")
+
+/**
+ * One stop on the day's route line: a numbered node on a line in the country's colour.
+ * The line above a stop is solid once the stop before it is visited, faint until then.
+ */
 @Composable
-fun StepRow(ui: Ui, i: Int, s: Place, isNext: Boolean, here: LatLng?) {
+fun RouteStop(ui: Ui, i: Int, s: Place, isNext: Boolean, here: LatLng?, prevDone: Boolean, first: Boolean, last: Boolean) {
     val c = LocalPal.current
     val st = ui.st
     val done = st.isSeen(s.id)
-    Column {
-        Box(Modifier.fillMaxWidth().height(1.dp).background(c.line))
-        Row(Modifier.padding(vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            val ring = if (done) c.food else if (isNext) c.accent else c.line
-            Box(Modifier.size(28.dp).clip(CircleShape).background(if (done) c.food else c.surface).border(1.5.dp, ring, CircleShape)
-                .clickable { ui.toggleSeen(s.id) }, contentAlignment = Alignment.Center) {
-                T(if (done) "✓" else "${i + 1}", 13.sp, FontWeight.SemiBold, if (done) c.surface else if (isNext) c.accent else c.muted)
-            }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(s.name, modifier = Modifier.clickable { ui.open = s.id }, style = TextStyle(
-                    fontFamily = Fonts.body, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = if (done) c.muted else c.fg,
-                    textDecoration = if (done) TextDecoration.LineThrough else TextDecoration.Underline))
-                if (Trip.isFree(s)) FreeBadge()
-                if (!done) distInfo(here, s)?.let { T(it.text, 13.5.sp, FontWeight.SemiBold, c.accent) }
-                T(s.desc + " About " + dur(s.min) + ".", 14.sp, color = c.muted)
-                val n = st.note(s.id)
-                if (!n.isEmpty) { Stars(n.stars); if (n.text.isNotBlank()) T("“" + n.text.trim() + "”", 13.sp, maxLines = 2, italic = true) }
-            }
-            Column(Modifier.width(74.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Btn("Go", Modifier.fillMaxWidth(), small = true) { ui.openUrl(mapsUrl(here, s)) }
-                val sb = RoundedCornerShape(9.dp)
-                Box(Modifier.fillMaxWidth().heightIn(min = 34.dp).clip(sb).background(if (done) c.foodSoft else Color.Transparent)
-                    .border(1.dp, if (done) c.food else c.line, sb).clickable { ui.toggleSeen(s.id) }.padding(6.dp), contentAlignment = Alignment.Center) {
-                    T(if (done) "Done ✓" else "Done", 13.sp, FontWeight.SemiBold, if (done) c.food else c.muted)
+    val nodeFill by animateColorAsState(if (done) c.visited else if (isNext) c.accentSoft else c.surface, tween(200), label = "node")
+    val lineDone = c.accent
+    val lineTodo = c.accent.copy(alpha = 0.28f)
+    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).padding(end = 16.dp)) {
+        // The rail: line segments and the node (48 dp touch target, a checkbox for screen readers).
+        Box(Modifier.width(64.dp).fillMaxHeight().drawBehind {
+            val x = size.width / 2f
+            val nodeY = 12.dp.toPx() + 24.dp.toPx()
+            val w = 3.dp.toPx()
+            if (!first) drawLine(if (prevDone) lineDone else lineTodo, Offset(x, 0f), Offset(x, nodeY), w)
+            if (!last) drawLine(if (done) lineDone else lineTodo, Offset(x, nodeY), Offset(x, size.height), w)
+        }) {
+            Box(Modifier.align(Alignment.TopCenter).padding(top = 12.dp).size(48.dp).clip(CircleShape)
+                .toggleable(value = done, role = Role.Checkbox) { ui.toggleSeen(s.id) }
+                .semantics { contentDescription = "Stop ${i + 1}, ${s.name}, visited" }, contentAlignment = Alignment.Center) {
+                Box(Modifier.size(32.dp).clip(CircleShape).background(nodeFill)
+                    .border(if (isNext && !done) 2.5.dp else 1.5.dp, if (done) c.visited else if (isNext) c.accent else c.line, CircleShape),
+                    contentAlignment = Alignment.Center) {
+                    if (done) Icon(CheckIcon, null, tint = if (c.dark) c.bg else Color.White, modifier = Modifier.size(18.dp))
+                    else T("${i + 1}", Ty.label, FontWeight.SemiBold, if (isNext) c.accent else c.muted, Fonts.display)
                 }
+            }
+        }
+        Column(Modifier.weight(1f).padding(top = 14.dp, bottom = 14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Column(Modifier.clip(RoundedCornerShape(Rad.s)).clickable(onClickLabel = "Open ${s.name}") { ui.open = s.id },
+                verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                if (isNext && !done) T("Next stop", Ty.caption, FontWeight.SemiBold, c.accent)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    T(s.name, Ty.bodyL, FontWeight.SemiBold, if (done) c.muted else c.fg, modifier = Modifier.weight(1f, fill = false))
+                    Icon(ChevronIcon, null, tint = c.muted, modifier = Modifier.size(18.dp))
+                }
+                if (Trip.isFree(s)) FreeBadge()
+                if (!done) distInfo(here, s)?.let { T(it.text, Ty.label, FontWeight.SemiBold, c.accent) }
+                T(s.desc + " About " + dur(s.min) + ".", Ty.bodyS, color = c.muted)
+            }
+            NoteLine(st.note(s.id))
+            Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Btn("Directions", Modifier.weight(1f), BtnKind.Tonal, small = true, icon = GoIcon) { ui.openUrl(mapsUrl(here, s)) }
+                VisitedToggle(done, Modifier.weight(1f)) { ui.toggleSeen(s.id) }
             }
         }
     }
