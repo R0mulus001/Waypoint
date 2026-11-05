@@ -1,8 +1,18 @@
 package com.laur.waypoint
 
 import android.content.Context
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -86,14 +96,17 @@ private fun httpGetOnce(url: String): String {
     } finally { c.disconnect() }
 }
 
-private fun httpPost(url: String, body: String): String {
+private fun httpPost(url: String, body: String, readTimeout: Int = 60000, onOpen: (HttpURLConnection) -> Unit = {}): String {
     val c = URL(url).openConnection() as HttpURLConnection
+    onOpen(c)
     c.requestMethod = "POST"; c.doOutput = true
     c.setRequestProperty("User-Agent", UA); c.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
-    c.connectTimeout = 15000; c.readTimeout = 60000
+    c.connectTimeout = 10000; c.readTimeout = readTimeout
     try {
         c.outputStream.use { it.write(body.toByteArray()) }
-        if (c.responseCode !in 200..299) throw RuntimeException("HTTP ${c.responseCode}")
+        val code = c.responseCode
+        if (code == 429 || code >= 500) throw BusyException("busy $code")
+        if (code !in 200..299) throw RuntimeException("HTTP $code")
         return c.inputStream.bufferedReader().use { it.readText() }
     } finally { c.disconnect() }
 }
@@ -184,27 +197,35 @@ class GuideBuilder(private val ctx: Context) {
         progress("Finding $name on the map")
         val (lat, lng) = at ?: locate(country, name, wiki) ?: throw RuntimeException("Couldn't find $name on the map.")
 
-        progress("Finding the top sights")
-        val sights = findSights(lat, lng, wiki ?: name).take(50)
-        if (sights.size < 3) throw RuntimeException("Couldn't find enough sights for $name. Try a bigger city nearby.")
+        // Places to eat (OpenStreetMap) and holidays come from other services, so they are fetched at the same time
+        // as the sights instead of after them (the steps used to run one after another).
+        val side = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        try {
+            val food = side.async { runCatching { findFood(lat, lng) }.getOrDefault(emptyList()) }
+            val hol = side.async { runCatching { holidays(country) }.getOrDefault(JSONObject()) }
 
-        progress("Finding cafés, restaurants and bars")
-        val eats = runCatching { findFood(lat, lng) }.getOrDefault(emptyList())
+            progress("Finding the top sights")
+            val sights = findSights(lat, lng, wiki ?: name).take(50)
+            if (sights.size < 3) throw RuntimeException("Couldn't find enough sights for $name. Try a bigger city nearby.")
 
-        progress("Building day plans")
-        val key = country.code.lowercase() + "-" + slug(name)
-        val json = assemble(key, country, name, lat, lng, sights, eats)
+            progress("Finding cafés, restaurants and bars")
+            val eats = food.await()
 
-        progress("Adding holidays and sunset times")
-        json.put("holidays", runCatching { holidays(country) }.getOrDefault(JSONObject()))
-        val zone = ZoneId.of(country.tz)
-        val year = LocalDate.now(zone).year
-        json.put("sunsets", JSONArray((1..12).map { m -> sunsetLocal(LocalDate.of(year, m, 15), lat, lng, zone) }))
+            progress("Building day plans")
+            val key = country.code.lowercase() + "-" + slug(name)
+            val json = assemble(key, country, name, lat, lng, sights, eats)
 
-        val f = File(dir, "$key.json")
-        City(json) // check the guide opens before saving it
-        f.writeAtomically(json.toString())
-        f
+            progress("Adding holidays and sunset times")
+            json.put("holidays", hol.await())
+            val zone = ZoneId.of(country.tz)
+            val year = LocalDate.now(zone).year
+            json.put("sunsets", JSONArray((1..12).map { m -> sunsetLocal(LocalDate.of(year, m, 15), lat, lng, zone) }))
+
+            val f = File(dir, "$key.json")
+            City(json) // check the guide opens before saving it
+            f.writeAtomically(json.toString())
+            f
+        } finally { side.cancel() } // leaving the screen, or an error, stops the side lookups too
     }
 
     private fun locate(country: Country, name: String, wiki: String?): Pair<Double, Double>? {
@@ -250,18 +271,55 @@ class GuideBuilder(private val ctx: Context) {
         return out.filter { it.views > 0 }.sortedByDescending { it.views }
     }
 
-    private fun findFood(lat: Double, lng: Double): List<Eat> {
-        val q = "[out:json][timeout:40];(nwr[\"amenity\"~\"^(restaurant|cafe|bar|pub)$\"][\"name\"](around:1500,$lat,$lng););out center tags 600;"
-        val body = "data=" + URLEncoder.encode(q, "UTF-8")
-        val servers = listOf("https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter",
-            "https://maps.mail.ru/osm/tools/overpass/api/interpreter")
-        var txt: String? = null
-        for (attempt in 0 until 6) {
-            txt = runCatching { httpPost(servers[attempt % servers.size], body) }.getOrNull()
-            if (txt != null) break
-            Thread.sleep(2000L * (attempt + 1))
-        }
-        if (txt == null) throw BusyException("overpass")
+    private val overpassServers = listOf(
+        "https://overpass-api.de/api/interpreter", "https://overpass.private.coffee/api/interpreter",
+        "https://overpass.kumi.systems/api/interpreter", "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+    )
+
+    /**
+     * Asks the public Overpass servers; the fastest answer wins. The first server gets a head start of a few seconds;
+     * if it is slow the next one is asked too, and a busy or broken server is skipped at once instead of waiting.
+     * Gives up after [budgetMs], so a busy map service can no longer hold the guide up for minutes.
+     */
+    private suspend fun overpass(query: String, budgetMs: Long = 60_000): String {
+        val body = "data=" + URLEncoder.encode(query, "UTF-8")
+        val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        val winner = CompletableDeferred<String>()
+        val jobs = ArrayList<Job>()
+        fun ask(url: String): Job = scope.launch {
+            var conn: HttpURLConnection? = null
+            coroutineContext.job.invokeOnCompletion { runCatching { conn?.disconnect() } }
+            runCatching { httpPost(url, body, readTimeout = 35_000) { conn = it } }
+                .onSuccess { winner.complete(it) }
+                .onFailure { android.util.Log.w("Waypoint", "overpass " + url.substringAfter("//").substringBefore("/") + ": " + it.message) }
+        }.also { jobs += it }
+        try {
+            return withTimeoutOrNull(budgetMs) {
+                var got: String? = null
+                for (round in 0 until 2) {
+                    if (round > 0) delay(1500)
+                    for (url in overpassServers) {
+                        val job = ask(url)
+                        // Head start for this server; move on early if it already failed.
+                        val until = System.currentTimeMillis() + if (round == 0) 5000 else 8000
+                        while (!winner.isCompleted && job.isActive && System.currentTimeMillis() < until) delay(100)
+                        if (winner.isCompleted) break
+                    }
+                    while (!winner.isCompleted && jobs.any { it.isActive }) delay(100)
+                    if (winner.isCompleted) { got = winner.await(); break }
+                }
+                got
+            } ?: throw BusyException("overpass")
+        } finally { scope.cancel() }
+    }
+
+    private suspend fun findFood(lat: Double, lng: Double): List<Eat> {
+        // Exact tag values (indexed) instead of one regex, a shorter server timeout, and no sorting of the result (qt).
+        val a = "(around:1500,$lat,$lng)"
+        val q = "[out:json][timeout:25];(" +
+            listOf("restaurant", "cafe", "bar", "pub").joinToString("") { "nwr[\"amenity\"=\"$it\"][\"name\"]$a;" } +
+            ");out tags center qt 600;"
+        val txt = overpass(q)
         val els = JSONObject(txt).getJSONArray("elements")
         val all = (0 until els.length()).mapNotNull { i ->
             val e = els.getJSONObject(i)
