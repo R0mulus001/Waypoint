@@ -198,10 +198,10 @@ private fun DrawScope.pin() {
  * Used wherever a city appears (My trips, diary, city header).
  */
 @Composable
-fun FlagTile(code: String, size: Dp, label: String? = null, pin: Boolean = true, fallback: Color = LocalPal.current.accent, modifier: Modifier = Modifier) {
+fun FlagTile(code: String, tile: Dp, label: String? = null, pin: Boolean = true, fallback: Color = LocalPal.current.accent, modifier: Modifier = Modifier) {
     val edge = LocalPal.current.fg.copy(alpha = 0.12f)
     val m = if (label != null) modifier.semantics { contentDescription = label } else modifier
-    Canvas(m.size(size)) {
+    Canvas(m.size(tile)) {
         val r = size.minDimension * 0.24f
         val rr = RoundRect(0f, 0f, size.width, size.height, CornerRadius(r, r))
         val clip = Path().apply { addRoundRect(rr) }
