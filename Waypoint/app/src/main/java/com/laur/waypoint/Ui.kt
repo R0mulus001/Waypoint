@@ -608,36 +608,49 @@ fun VisitedTab(ui: Ui) {
     val byDay = entries.groupBy { visitedDayKey(it.value) }
     val noted = st.notes.keys.filter { Trip.BY_ID.containsKey(it) && !st.visited.containsKey(it) }
 
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = listPad, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = listPad, verticalArrangement = Arrangement.spacedBy(0.dp)) {
         if (entries.isEmpty()) item {
-            T("Tap Visited on any place, or tick a stop in Day plans. It's saved on your phone with the date and time, together with your notes and stars.",
-                15.sp, color = c.muted, modifier = Modifier.padding(vertical = 12.dp))
+            Column(Modifier.fillMaxWidth().padding(top = 32.dp, bottom = 16.dp, start = 8.dp, end = 8.dp), horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Box(Modifier.size(64.dp).clip(RoundedCornerShape(20.dp)).background(c.visitedSoft), contentAlignment = Alignment.Center) {
+                    Icon(VisitedIcon, null, tint = c.visited, modifier = Modifier.size(30.dp))
+                }
+                T("Nothing visited yet", Ty.headline, FontWeight.SemiBold, family = Fonts.display, align = TextAlign.Center)
+                T("Tap Visited on any place, or tick a stop in Day plans. It's saved on your phone with the date and time, together with your notes and stars.",
+                    Ty.body, color = c.muted, align = TextAlign.Center)
+            }
         }
         byDay.forEach { (dk, list) ->
-            item(key = "d-$dk") { Label(dayTitle(dk), modifier = Modifier.padding(top = 8.dp)) }
-            items(list, key = { "v-" + it.key }) { e -> VisitedRow(ui, Trip.BY_ID.getValue(e.key), e.value) }
+            item(key = "d-$dk") { Label(dayTitle(dk), modifier = Modifier.padding(start = 4.dp, top = 16.dp, bottom = 8.dp)) }
+            itemsIndexed(list, key = { _, e -> "v-" + e.key }) { i, e -> VisitedRow(ui, Trip.BY_ID.getValue(e.key), e.value, i, list.size) }
         }
         if (noted.isNotEmpty()) {
-            item(key = "notes") { Label("Notes on places not visited yet", modifier = Modifier.padding(top = 8.dp)) }
-            items(noted, key = { "n-$it" }) { VisitedRow(ui, Trip.BY_ID.getValue(it), null) }
+            item(key = "notes") { Label("Notes on places not visited yet", modifier = Modifier.padding(start = 4.dp, top = 16.dp, bottom = 8.dp)) }
+            itemsIndexed(noted, key = { _, id -> "n-$id" }) { i, id -> VisitedRow(ui, Trip.BY_ID.getValue(id), null, i, noted.size) }
         }
     }
 }
 
 @Composable
-fun VisitedRow(ui: Ui, p: Place, at: Long?) {
+fun VisitedRow(ui: Ui, p: Place, at: Long?, i: Int, n: Int) {
     val c = LocalPal.current
     val cat = Trip.catOf(p)
-    val n = ui.st.note(p.id)
-    Card(Modifier.clickable { ui.open = p.id }) {
-        Row(Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Top) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Tag(Trip.label(cat), Trip.isFoodCat(cat))
-                T(p.name, 16.sp, FontWeight.SemiBold)
-                Stars(n.stars)
-                if (n.text.isNotBlank()) T("“" + n.text.trim() + "”", 13.5.sp, italic = true, maxLines = 4)
+    val note = ui.st.note(p.id)
+    GroupRow(i, n, onClick = { ui.open = p.id }, dividerInset = 72.dp) {
+        Row(Modifier.padding(horizontal = 16.dp, vertical = 14.dp), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.Top) {
+            Box(Modifier.size(40.dp).clip(CircleShape).background(if (at != null) c.visitedSoft else c.surface2), contentAlignment = Alignment.Center) {
+                Icon(if (at != null) CheckIcon else NoteIcon, null, tint = if (at != null) c.visited else c.muted, modifier = Modifier.size(20.dp))
             }
-            if (at != null) T(visitedWhen(at).substringAfter(", "), 14.sp, FontWeight.SemiBold, c.food)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Tag(Trip.label(cat), icon = catIcon(cat))
+                    Spacer(Modifier.weight(1f))
+                    if (at != null) T(visitedWhen(at).substringAfter(", "), Ty.label, FontWeight.SemiBold, c.muted)
+                }
+                T(p.name, Ty.bodyL, FontWeight.SemiBold)
+                Stars(note.stars)
+                if (note.text.isNotBlank()) T("“" + note.text.trim() + "”", Ty.bodyS, italic = true, maxLines = 4)
+            }
         }
     }
 }
