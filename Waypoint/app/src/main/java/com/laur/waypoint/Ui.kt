@@ -45,6 +45,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -97,6 +98,8 @@ import java.time.LocalDate
 class Ui(val st: TripState, val photos: Photos, val dl: Downloader, val openUrl: (String) -> Unit, val requestLocation: () -> Unit, val scope: CoroutineScope, val onBack: () -> Unit) {
     /** Set by the app: fetches food again for a built guide and swaps the city in. */
     var reloadFood: suspend () -> Unit = {}
+    /** Places to eat are still loading in the background (the guide opened without them). */
+    var foodLoading by mutableStateOf(false)
     var open by mutableStateOf<String?>(null)
     val skipped = mutableStateOf(setOf<String>())
     var toast by mutableStateOf<Toast?>(null)
@@ -117,12 +120,13 @@ class Ui(val st: TripState, val photos: Photos, val dl: Downloader, val openUrl:
 
 @Composable
 fun TripApp(st: TripState, photos: Photos, dl: Downloader, gps: LatLng?, locationOn: Boolean, requestLocation: () -> Unit, openUrl: (String) -> Unit,
-            reloadFood: suspend () -> Unit = {}, onBack: () -> Unit) {
+            reloadFood: suspend () -> Unit = {}, foodLoading: Boolean = false, onBack: () -> Unit) {
     val pal = LocalPal.current
     val scope = rememberCoroutineScope()
     // Keyed on photos and dl too: "Load places to eat" swaps in a new city, and its new Photos/Downloader must reach the screens.
     val ui = remember(st, photos, dl) { Ui(st, photos, dl, openUrl, requestLocation, scope, onBack) }
     ui.reloadFood = reloadFood
+    ui.foodLoading = foodLoading
     var openSaved by rememberSaveable(Trip.city.key) { mutableStateOf<String?>(null) }
     LaunchedEffect(ui) { if (openSaved != null) ui.open = openSaved }
     LaunchedEffect(ui.open) { openSaved = ui.open }
@@ -311,6 +315,13 @@ fun FoodRetryRow(ui: Ui) {
     Card {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             CardHead(FoodIcon, "Places to eat and drink")
+            if (ui.foodLoading) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    CircularProgressIndicator(Modifier.size(18.dp), color = c.accent, strokeWidth = 2.dp)
+                    T("Finding cafés, restaurants and bars… They'll appear here by themselves in a moment.", Ty.bodyS, color = c.muted)
+                }
+                return@Column
+            }
             T(msg ?: "Cafés, restaurants and bars couldn't load when this guide was built. The map service may have been busy.", Ty.bodyS, color = c.muted)
             Btn(if (busy) "Loading…" else "Load places to eat", Modifier.fillMaxWidth(), BtnKind.Tonal, small = true) {
                 if (!busy) { busy = true; msg = null

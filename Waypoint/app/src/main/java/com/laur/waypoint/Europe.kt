@@ -3,6 +3,7 @@ package com.laur.waypoint
 import android.content.Context
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -162,8 +163,13 @@ fun sunsetLocal(date: LocalDate, lat: Double, lng: Double, zone: ZoneId): String
 
 // ---------- guide builder ----------
 
+/** A built guide. [foodLater]: places to eat were still loading, so the guide was saved without them for now. */
+data class Built(val file: File, val foodLater: Boolean)
+
 class GuideBuilder(private val ctx: Context) {
     val dir = File(ctx.filesDir, "guides").apply { mkdirs() }
+    /** Places-to-eat lookups still running for guides that were opened without them (see [refreshFood]). */
+    private val lateFood = java.util.concurrent.ConcurrentHashMap<String, Deferred<List<Eat>>>()
 
     private data class Sight(val pageId: Long, val title: String, val lat: Double, val lng: Double, val desc: String, val views: Long, val cat: String, val out: Boolean)
     private data class Eat(val id: String, val name: String, val lat: Double, val lng: Double, val kind: String, val desc: String, val score: Int)
@@ -193,13 +199,14 @@ class GuideBuilder(private val ctx: Context) {
     private val outRe = Regex("square|bridge|monument|statue|fountain|gate|memorial|column|obelisk|piazza|plaza|platz|market", RegexOption.IGNORE_CASE)
 
     /** Builds a full city guide and saves it on the phone. Calls [progress] with what it's doing. */
-    suspend fun build(country: Country, name: String, wiki: String?, at: Pair<Double, Double>?, progress: (String) -> Unit): File = withContext(Dispatchers.IO) {
+    suspend fun build(country: Country, name: String, wiki: String?, at: Pair<Double, Double>?, progress: (String) -> Unit): Built = withContext(Dispatchers.IO) {
         progress("Finding $name on the map")
         val (lat, lng) = at ?: locate(country, name, wiki) ?: throw RuntimeException("Couldn't find $name on the map.")
 
         // Places to eat (OpenStreetMap) and holidays come from other services, so they are fetched at the same time
         // as the sights instead of after them (the steps used to run one after another).
         val side = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        var keepFood = false
         try {
             val food = side.async { runCatching { findFood(lat, lng) }.getOrDefault(emptyList()) }
             val hol = side.async { runCatching { holidays(country) }.getOrDefault(JSONObject()) }
@@ -209,11 +216,15 @@ class GuideBuilder(private val ctx: Context) {
             if (sights.size < 3) throw RuntimeException("Couldn't find enough sights for $name. Try a bigger city nearby.")
 
             progress("Finding cafés, restaurants and bars")
-            val eats = food.await()
+            // The public map servers are often slow (15-35 s). Once the sights are in, wait at most 15 s more:
+            // after that the guide opens without places to eat and they arrive in the background.
+            val eats = withTimeoutOrNull(15_000) { food.await() }
+            val key0 = country.code.lowercase() + "-" + slug(name)
+            if (eats == null) { lateFood[key0] = food; keepFood = true }
 
             progress("Building day plans")
             val key = country.code.lowercase() + "-" + slug(name)
-            val json = assemble(key, country, name, lat, lng, sights, eats)
+            val json = assemble(key, country, name, lat, lng, sights, eats ?: emptyList())
 
             progress("Adding holidays and sunset times")
             json.put("holidays", hol.await())
@@ -224,8 +235,15 @@ class GuideBuilder(private val ctx: Context) {
             val f = File(dir, "$key.json")
             City(json) // check the guide opens before saving it
             f.writeAtomically(json.toString())
-            f
-        } finally { side.cancel() } // leaving the screen, or an error, stops the side lookups too
+            Built(f, foodLater = keepFood)
+        } catch (e: Throwable) {
+            keepFood = false
+            lateFood.remove(country.code.lowercase() + "-" + slug(name))
+            throw e
+        } finally {
+            // Leaving the screen, or an error, stops the side lookups too; a deferred food lookup keeps going.
+            if (!keepFood) side.cancel()
+        }
     }
 
     private fun locate(country: Country, name: String, wiki: String?): Pair<Double, Double>? {
@@ -272,8 +290,8 @@ class GuideBuilder(private val ctx: Context) {
     }
 
     private val overpassServers = listOf(
-        "https://overpass-api.de/api/interpreter", "https://overpass.private.coffee/api/interpreter",
-        "https://overpass.kumi.systems/api/interpreter", "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+        "https://overpass-api.de/api/interpreter", "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+        "https://overpass.private.coffee/api/interpreter", "https://overpass.kumi.systems/api/interpreter",
     )
 
     /**
@@ -314,11 +332,12 @@ class GuideBuilder(private val ctx: Context) {
     }
 
     private suspend fun findFood(lat: Double, lng: Double): List<Eat> {
-        // Exact tag values (indexed) instead of one regex, a shorter server timeout, and no sorting of the result (qt).
-        val a = "(around:1500,$lat,$lng)"
-        val q = "[out:json][timeout:25];(" +
-            listOf("restaurant", "cafe", "bar", "pub").joinToString("") { "nwr[\"amenity\"=\"$it\"][\"name\"]$a;" } +
-            ");out tags center qt 600;"
+        // A box of about 1.5 km around the centre (cheaper for the servers than a radius search), a shorter server
+        // timeout, and no sorting of the result (qt). Distance still ranks the places below.
+        val dLat = 1.5 / 111.0
+        val dLng = dLat / Math.cos(Math.toRadians(lat))
+        val box = String.format(Locale.US, "%.5f,%.5f,%.5f,%.5f", lat - dLat, lng - dLng, lat + dLat, lng + dLng)
+        val q = "[out:json][timeout:25][bbox:$box];nwr[\"amenity\"~\"^(restaurant|cafe|bar|pub)$\"][\"name\"];out tags center qt 600;"
         val txt = overpass(q)
         val els = JSONObject(txt).getJSONArray("elements")
         val all = (0 until els.length()).mapNotNull { i ->
@@ -364,7 +383,9 @@ class GuideBuilder(private val ctx: Context) {
         val f = File(dir, "${city.key}.json")
         val j = JSONObject(f.readText())
         val country = Europe.byCode(j.getString("countryCode")) ?: throw RuntimeException("Unknown country")
-        val eats = findFood(j.getDouble("centerLat"), j.getDouble("centerLng"))
+        // A lookup still running from when the guide was built is used first, so nothing is asked twice.
+        val late = lateFood.remove(city.key)?.let { d -> runCatching { d.await() }.getOrNull() }?.takeIf { it.isNotEmpty() }
+        val eats = late ?: findFood(j.getDouble("centerLat"), j.getDouble("centerLng"))
         if (eats.isEmpty()) throw RuntimeException("Couldn't find places to eat nearby.")
         val (food, cost) = foodJson(country, eats)
         j.put("food", food); j.put("cost", cost)

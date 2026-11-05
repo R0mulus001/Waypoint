@@ -66,6 +66,8 @@ import org.json.JSONObject
 /** Every city guide on the phone (hand-made and built), plus each city's saved data and photos. */
 class CityStores(private val ctx: Context, initial: List<City>) {
     val cities = mutableStateListOf<City>().apply { addAll(initial) }
+    /** Guides whose places to eat are still loading in the background. */
+    val foodLoading = mutableStateListOf<String>()
     val builder = GuideBuilder(ctx)
     private val states = HashMap<String, TripState>()
     private val photos = HashMap<String, Photos>()
@@ -109,6 +111,7 @@ fun WaypointApp(
             when {
                 !Hub.onboarded -> HubWelcome(locationOn, requestLocation)
                 city != null -> TripApp(stores.state(city), stores.photos(city), stores.downloader(city), gps, locationOn, requestLocation, openUrl,
+                    foodLoading = city.key in stores.foodLoading,
                     reloadFood = { stores.add(City(JSONObject(stores.builder.refreshFood(city).readText()))) }) { screen = Screen.Home; Hub.open("") }
                 else -> when (val s = screen) {
                     Screen.Home -> HomeScreen(stores) { screen = Screen.Countries }
@@ -458,9 +461,17 @@ fun BuildScreen(stores: CityStores, s: Screen.Build, onBack: () -> Unit) {
         runCatching {
             val main = android.os.Handler(android.os.Looper.getMainLooper())
             stores.builder.build(co, s.name, s.wiki, s.at) { msg -> main.post { if (step != "Starting") done.add(step); step = msg } }
-        }.onSuccess { f ->
-            val city = City(JSONObject(f.readText()))
+        }.onSuccess { b ->
+            val city = City(JSONObject(b.file.readText()))
             stores.add(city); Hub.addTrip(city.key); Hub.open(city.key)
+            // Opened without places to eat (the map service was slow): they keep loading and join the guide when ready.
+            if (b.foodLater) {
+                stores.foodLoading.add(city.key)
+                stores.scope.launch {
+                    runCatching { stores.add(City(JSONObject(stores.builder.refreshFood(city).readText()))) }
+                    stores.foodLoading.remove(city.key)
+                }
+            }
         }.onFailure { e ->
             if (e is kotlinx.coroutines.CancellationException) throw e // left the screen: not an error to show
             error = when {
