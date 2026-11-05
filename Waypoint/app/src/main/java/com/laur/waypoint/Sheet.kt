@@ -126,8 +126,8 @@ private fun SheetContent(ui: Ui, p: Place, here: LatLng?, maxH: Dp) {
             }
         }
         NotesBox(ui, p)
-        T(if (food) "Photos from the last 20 years: Wikimedia Commons and Mapillary contributors (CC BY-SA). Saved on your phone after the first look."
-          else "Text: Wikipedia. Photos from the last 20 years: Wikimedia Commons and Mapillary contributors (CC BY-SA). Saved on your phone after the first look.",
+        T(if (food) "Photos from the last 15 years: Wikimedia Commons and Mapillary contributors (CC BY-SA). Saved on your phone after the first look."
+          else "Text: Wikipedia. Photos from the last 15 years: Wikimedia Commons and Mapillary contributors (CC BY-SA). Saved on your phone after the first look.",
           Ty.caption, color = c.muted)
     }
 }
