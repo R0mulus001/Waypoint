@@ -64,9 +64,15 @@ def place(title):
     qid = (pg.get("pageprops") or {}).get("wikibase_item")
     cat = None
     if qid:
-        w = get("https://www.wikidata.org/w/api.php?action=wbgetentities&format=json&props=sitelinks&sitefilter=commonswiki&ids=" + qid)
-        t = (((w.get("entities") or {}).get(qid) or {}).get("sitelinks") or {}).get("commonswiki", {}).get("title", "")
-        cat = t[len("Category:"):] if t.startswith("Category:") else None
+        w = get("https://www.wikidata.org/w/api.php?action=wbgetentities&format=json&props=claims%7Csitelinks&sitefilter=commonswiki&ids=" + qid)
+        e = (w.get("entities") or {}).get(qid) or {}
+        try:
+            p373 = e["claims"]["P373"][0]["mainsnak"]["datavalue"]["value"]
+        except Exception:
+            p373 = ""
+        t = (e.get("sitelinks") or {}).get("commonswiki", {}).get("title", "")
+        print("   P373:", p373 or None, "| sitelink:", t)
+        cat = p373 or (t[len("Category:"):] if t.startswith("Category:") else None)
     print("   commons category:", cat)
     if cat:
         r = get("https://commons.wikimedia.org/w/api.php?action=query&format=json&generator=categorymembers&gcmtype=file&gcmsort=timestamp&gcmdir=desc"
@@ -83,7 +89,7 @@ def place(title):
         print("   category members returned:", len(rows))
         for row in rows[:10]:
             print("     CAT %s | %s | %s %s | %sx%s %s" % (row[0][:10], row[1][:80], row[3], row[2], row[4], row[5], row[6]))
-    if TOKEN and lat:
+    if False and TOKEN and lat:
         mapillary(lat, lng)
 
 
