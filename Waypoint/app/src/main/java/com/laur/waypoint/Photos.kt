@@ -55,12 +55,12 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
 
     init {
         db.writableDatabase.execSQL("CREATE TABLE IF NOT EXISTS checked(id TEXT PRIMARY KEY)")
-        // Photo choice changed in version 7 (each place's Commons category now really found; street photos only to fill gaps). Old picks are cleared once.
-        if (db.kvGet("photoVer") != "7") {
+        // Photo choice changed in version 8 (local-language Wikipedia, Wikidata's own photo, no paintings, maps or close-ups). Old picks are cleared once.
+        if (db.kvGet("photoVer") != "8") {
             db.writableDatabase.execSQL("DELETE FROM photos")
             db.writableDatabase.execSQL("DELETE FROM checked")
             dir.listFiles()?.forEach { it.delete() }
-            db.kvPut("photoVer", "7")
+            db.kvPut("photoVer", "8")
         }
     }
 
@@ -315,9 +315,13 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
         }
         // Lead pictures are checked the same way (type, size and the date they were taken), in the same bulk requests.
         val leads = asked.mapNotNull { (_, t) -> pa[names[t]]?.optString("pageimage")?.takeIf { it.isNotBlank() }?.let { "File:" + it.replace('_', ' ') } }
-        val info = fileInfo(cand.values.flatten() + leads)
         val qids = asked.mapNotNull { (id, t) -> pa[names[t]]?.optJSONObject("pageprops")?.optString("wikibase_item")?.takeIf { it.isNotBlank() }?.let { id to it } }.toMap()
-        val cats = runCatching { categories(qids.values.toList()) }.getOrDefault(emptyMap())
+        val its = runCatching { items(qids.values.toList()) }.getOrDefault(emptyMap())
+        val info = fileInfo(cand.values.flatten() + leads + its.values.mapNotNull { it.photo?.let { f -> "File:" + f.replace('_', ' ') } })
+        // The same places' articles in the country's own language: usually more, newer photos (all in a few requests).
+        val l = lang
+        val la = if (l == null) emptyMap() else runCatching { articles(l, its.values.mapNotNull { it.local }) }.getOrDefault(emptyMap())
+        val linfo = if (l == null) emptyMap() else runCatching { fileInfo(la.values.flatMap { listOfNotNull(it.first) + it.second }, l) }.getOrDefault(emptyMap())
         asked.forEach { (id, t) ->
             val pg = pa[names[t]] ?: return@forEach
             if (pg.has("missing")) return@forEach
@@ -326,11 +330,14 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
             val picked = LinkedHashMap<String, String>()
             fun add(u: String) { val n = fileName(u); if (n.isNotBlank() && !picked.containsKey(n)) picked[n] = u }
             val leadFile = pg.optString("pageimage").takeIf { it.isNotBlank() }?.let { "File:" + it.replace('_', ' ') }
-            pg.optJSONObject("thumbnail")?.optString("source")?.takeIf { it.isNotBlank() && leadOk(it) && leadFile != null && info.containsKey(leadFile) }?.let(::add)
-            // Articles also show other buildings (comparisons, "see also", boxes at the bottom): only pictures named after this place.
-            val cat = qids[id]?.let { cats[it] }
-            val toks = placeTokens(chunk.first { it.id == id }, t) + tokens(cat.orEmpty()) + tokens(aliasOf(qids[id]))
-            cand[id]?.filter { matches(it, toks) }?.forEach { f -> info[f]?.let(::add) }
+            val enLead = pg.optJSONObject("thumbnail")?.optString("source")?.takeIf { it.isNotBlank() && leadOk(it) }
+                ?.let { u -> leadFile?.let { info[it] }?.let { Pic(u, it.good) } }
+            val item = qids[id]?.let { its[it] }
+            val cat = item?.cat
+            val toks = placeTokens(chunk.first { it.id == id }, t) + itemTokens(item)
+            val local = item?.local?.let { la[it] }
+            choose(enLead, cand[id].orEmpty().mapNotNull { f -> info[f]?.let { f to it } }, item?.photo?.let { info["File:" + it.replace('_', ' ')] },
+                local?.first?.let { linfo[it] }, local?.second.orEmpty().mapNotNull { f -> linfo[f]?.let { f to it } }, toks).forEach(::add)
             // Few or none from the article: the place's own Commons category, photos named after it first.
             if (picked.size < 4 && cat != null) runCatching { categoryPhotos(cat, toks) }.getOrDefault(emptyList()).forEach(::add)
             pre[id] = Pre(text, picked.values.take(6).toList())
@@ -339,7 +346,7 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
 
     // ---------- choosing photos ----------
 
-    private data class Img(val title: String, val thumb: String)
+    private data class Img(val title: String, val thumb: String, val good: Boolean = false)
 
     /** Drawings, symbols and documents rather than photos of the place. */
     // Whole words only: the old substring match also threw away "Chartres", "Iconostasis", "Photograph of…",
@@ -355,8 +362,26 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
     private fun usable(title: String, ii: JSONObject): Boolean {
         val w = ii.optInt("width"); val h = ii.optInt("height")
         return Regex("jpeg|webp").containsMatchIn(ii.optString("mime")) && w >= 600 && h >= 400 && w.toFloat() / h in 0.6f..2.6f &&
-            !junk.containsMatchIn(title) && !mapWords.containsMatchIn(plain(title)) && recent(ii)
+            !junk.containsMatchIn(title) && !mapWords.containsMatchIn(plain(title)) && recent(ii) && !notAPhoto.containsMatchIn(cats(ii))
     }
+
+    /** The file's Commons categories, in one lowercase line ("quality images|st. stephen's cathedral, vienna|..."). */
+    private fun cats(ii: JSONObject) = plain(ii.optJSONObject("extmetadata")?.optJSONObject("Categories")?.optString("value").orEmpty()).replace('_', ' ')
+
+    /**
+     * Commons sorts every file into categories, and those say what a picture really is. Paintings, engravings and old
+     * scans (often uploaded recently, so the date alone let them through), maps saved as JPEG, and close-ups of details
+     * (the cathedral's bells, a relief, a plaque) don't show the place as you'll see it.
+     */
+    private val notAPhoto = Regex("(?<![a-z])(paintings?|gemalde|dipinti|obrazy|engravings?|etchings?|woodcuts?|lithographs?|prints|drawings?|" +
+        "illustrations?|manuscripts?|portraits?|artworks?|frescos?|frescoes|mosaics?|stained glass|tapestr[a-z]*|miniatures|in art|" +
+        "historical images|historical photographs|old photographs|postcards|scans?|maps?|plans|floor plans|cartograph[a-z]*|territor[a-z]*|" +
+        "bells?|glocken?|campane|dzwony|reliefs?|details?|inscriptions?|plaques?|coins?|stamps?|documents?|signatures?|coats? of arms|" +
+        "heraldry|banners?|flags?|tombs?|epitaphs?|graves?|people|politicians|ceremon[a-z]*|press conferences?|logos?|diagrams?|charts?|" +
+        "reconstructions?|models?|3d renders?)(?![a-z])")
+
+    /** Pictures Commons reviewers marked as good: sharp, well framed, usually the whole building. They go first. */
+    private fun good(ii: JSONObject) = Regex("quality images|featured pictures|valued images").containsMatchIn(cats(ii))
 
     /**
      * Only photos taken in the last 15 years, so the place looks like it does today (no old postcards or scans).
@@ -371,12 +396,12 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
     }
 
     /** The photo at the top of the place's Wikipedia article: almost always the landmark itself. */
-    private fun leadImage(title: String): String? {
+    private fun leadImage(title: String): Pic? {
         val pg = firstPage(JSONObject(get("https://en.wikipedia.org/w/api.php?action=query&format=json&redirects=1&prop=pageimages&piprop=thumbnail%7Cname&pithumbsize=960&titles=" +
             enc(title.replace('_', ' '))))) ?: return null
         val thumb = pg.optJSONObject("thumbnail")?.optString("source")?.takeIf { it.isNotBlank() && leadOk(it) } ?: return null
         val name = pg.optString("pageimage").takeIf { it.isNotBlank() } ?: return null
-        return if (fileInfo(listOf("File:" + name.replace('_', ' '))).isNotEmpty()) thumb else null
+        return fileInfo(listOf("File:" + name.replace('_', ' '))).values.firstOrNull()?.let { Pic(thumb, it.good) }
     }
 
     /** The Wikidata item of a Wikipedia article ("Q…"). */
@@ -386,35 +411,63 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
         return pg.optJSONObject("pageprops")?.optString("wikibase_item")?.takeIf { it.isNotBlank() }
     }
 
-    /**
-     * Commons category of each Wikidata item ("Stephansdom" for St. Stephen's Cathedral). It comes from the item's
-     * "Commons category" property (P373); only if that's missing, from its Commons link when the link is a category.
-     * Big landmarks link to a Commons gallery page instead, so reading only the link found no category for them.
-     */
-    /** Wikidata item -> its Commons gallery name, filled by [categories]. */
-    private val alias = HashMap<String, String>()
-    private fun aliasOf(qid: String?) = qid?.let { synchronized(alias) { alias[it] } }.orEmpty()
+    /** What Wikidata knows about a place: Commons category and gallery, its chosen photo (P18), its article and name in the local language. */
+    private data class Item(val cat: String?, val gallery: String, val photo: String?, val local: String?, val label: String)
 
-    private fun categories(qids: List<String>): Map<String, String> {
-        val out = HashMap<String, String>()
+    /** The language of each country's own Wikipedia (Belgium: Dutch; Switzerland: German; Ireland, UK and Malta stay on English). */
+    private val lang: String? get() = mapOf("AL" to "sq", "AD" to "ca", "AT" to "de", "BY" to "be", "BE" to "nl", "BA" to "bs", "BG" to "bg",
+        "HR" to "hr", "CY" to "el", "CZ" to "cs", "DK" to "da", "EE" to "et", "FI" to "fi", "FR" to "fr", "DE" to "de", "GR" to "el", "HU" to "hu",
+        "IS" to "is", "IT" to "it", "XK" to "sq", "LV" to "lv", "LI" to "de", "LT" to "lt", "LU" to "fr", "MD" to "ro", "MC" to "fr", "ME" to "sr",
+        "NL" to "nl", "MK" to "mk", "NO" to "no", "PL" to "pl", "PT" to "pt", "RO" to "ro", "RU" to "ru", "SM" to "it", "RS" to "sr", "SK" to "sk",
+        "SI" to "sl", "ES" to "es", "SE" to "sv", "CH" to "de", "TR" to "tr", "UA" to "uk", "VA" to "it")[city.countryCode]
+
+    /**
+     * The Commons category comes from the item's "Commons category" property (P373); only if that's missing, from its
+     * Commons link when the link is a category. Big landmarks link to a Commons gallery page instead.
+     */
+    private fun items(qids: List<String>): Map<String, Item> {
+        val out = HashMap<String, Item>()
+        val l = lang
         qids.distinct().chunked(20).forEach { ids ->
-            val r = JSONObject(get("https://www.wikidata.org/w/api.php?action=wbgetentities&format=json&props=claims%7Csitelinks&sitefilter=commonswiki&ids=" +
-                enc(ids.joinToString("|")))).optJSONObject("entities") ?: return@forEach
+            val r = JSONObject(get("https://www.wikidata.org/w/api.php?action=wbgetentities&format=json&props=claims%7Csitelinks%7Clabels" +
+                "&sitefilter=commonswiki" + (if (l != null) "%7C${l}wiki&languages=$l" else "&languages=en") + "&ids=" + enc(ids.joinToString("|")))).optJSONObject("entities") ?: return@forEach
             ids.forEach { q ->
                 val e = r.optJSONObject(q) ?: return@forEach
-                val p373 = e.optJSONObject("claims")?.optJSONArray("P373")?.optJSONObject(0)?.optJSONObject("mainsnak")
+                fun claim(p: String) = e.optJSONObject("claims")?.optJSONArray(p)?.optJSONObject(0)?.optJSONObject("mainsnak")
                     ?.optJSONObject("datavalue")?.optString("value").orEmpty().trim()
-                val link = e.optJSONObject("sitelinks")?.optJSONObject("commonswiki")?.optString("title").orEmpty()
-                when {
-                    p373.isNotBlank() -> out[q] = p373.removePrefix("Category:")
-                    link.startsWith("Category:") -> out[q] = link.removePrefix("Category:")
+                val p373 = claim("P373")
+                val sl = e.optJSONObject("sitelinks")
+                val link = sl?.optJSONObject("commonswiki")?.optString("title").orEmpty()
+                val cat = when {
+                    p373.isNotBlank() -> p373.removePrefix("Category:")
+                    link.startsWith("Category:") -> link.removePrefix("Category:")
+                    else -> null
                 }
-                // The gallery page's name is often the local one ("Stephansdom"): extra words to recognise photos by.
-                if (link.isNotBlank() && !link.startsWith("Category:")) synchronized(alias) { alias[q] = link }
+                out[q] = Item(cat, link.takeIf { it.isNotBlank() && !it.startsWith("Category:") }.orEmpty(), claim("P18").ifBlank { null },
+                    l?.let { sl?.optJSONObject("${it}wiki")?.optString("title")?.ifBlank { null } },
+                    l?.let { e.optJSONObject("labels")?.optJSONObject(it)?.optString("value") }.orEmpty())
             }
         }
         return out
     }
+
+    /** Words that recognise a place's photos, in English and in the local language (the gallery name is often the local one: "Stephansdom"). */
+    private fun itemTokens(it: Item?) = if (it == null) emptySet() else
+        tokens(it.cat.orEmpty()) + tokens(it.gallery) + tokens(it.label, true) + tokens(it.local.orEmpty(), true)
+
+    /**
+     * The order photos are shown in: the English article's lead photo, Wikidata's chosen photo, the local article's lead
+     * photo; then the other photos of both articles (named after the place), the ones Commons reviewers marked as good first.
+     */
+    private fun ordered(leads: List<Pic?>, rest: List<Pic>): List<String> =
+        leads.filterNotNull().map { it.url } + rest.withIndex().sortedWith(compareByDescending<IndexedValue<Pic>> { it.value.good }.thenBy { it.index }).map { it.value.url }
+
+    /**
+     * A place's photos from its two articles and Wikidata. Articles also show other buildings (comparisons, "see also",
+     * boxes at the bottom), so their other pictures must be named after this place, in English or the local language.
+     */
+    private fun choose(enLead: Pic?, enFiles: List<Pair<String, Pic>>, photo: Pic?, localLead: Pic?, localFiles: List<Pair<String, Pic>>, toks: Set<String>): List<String> =
+        ordered(listOf(enLead, photo, localLead), (enFiles + localFiles).filter { matches(it.first, toks) }.map { it.second })
 
     /**
      * Photos straight from a place's Commons category, with the usual checks (age, size, no maps). Pictures named after
@@ -424,32 +477,64 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
     private fun categoryPhotos(cat: String, toks: Set<String> = emptySet(), max: Int = 6): List<String> {
         val r = JSONObject(get("https://commons.wikimedia.org/w/api.php?action=query&format=json&generator=categorymembers&gcmtype=file" +
             "&gcmsort=timestamp&gcmdir=desc&gcmlimit=80&gcmtitle=" + enc("Category:$cat") +
-            "&prop=imageinfo&iiprop=url%7Cmime%7Csize%7Ctimestamp%7Cextmetadata&iiextmetadatafilter=DateTimeOriginal&iiurlwidth=960"))
+            "&prop=imageinfo&iiprop=url%7Cmime%7Csize%7Ctimestamp%7Cextmetadata&iiextmetadatafilter=DateTimeOriginal%7CCategories&iiurlwidth=960"))
         val pages = r.optJSONObject("query")?.optJSONObject("pages") ?: return emptyList()
         return pages.keys().asSequence().map { pages.getJSONObject(it) }.mapNotNull { pg ->
             val ii = pg.optJSONArray("imageinfo")?.optJSONObject(0) ?: return@mapNotNull null
             val t = pg.optString("title")
             if (!usable(t, ii) || maxOf(ii.optInt("width"), ii.optInt("height")) < 1200) return@mapNotNull null
-            Triple(matches(t, toks), ii.optString("timestamp"), ii.optString("thumburl").ifBlank { ii.optString("url") })
-        }.sortedWith(compareByDescending<Triple<Boolean, String, String>> { it.first }.thenByDescending { it.second })
+            Triple((if (matches(t, toks)) 1 else 0) + (if (good(ii)) 2 else 0), ii.optString("timestamp"), ii.optString("thumburl").ifBlank { ii.optString("url") })
+        }.sortedWith(compareByDescending<Triple<Int, String, String>> { it.first }.thenByDescending { it.second })
             .map { it.third }.take(max).toList()
     }
 
-    /** Size, type and date of some Commons files; only the ones fit to show, as file title -> picture address. */
-    private fun fileInfo(files: List<String>): Map<String, String> {
-        val out = HashMap<String, String>()
+    private data class Pic(val url: String, val good: Boolean)
+
+    /** Size, type and date of some files; only the ones fit to show, as file title -> picture address. [wiki]: language of the Wikipedia asked. */
+    private fun fileInfo(files: List<String>, wiki: String = "en"): Map<String, Pic> {
+        val out = HashMap<String, Pic>()
         files.distinct().chunked(50).forEach { chunk ->
-            val r = JSONObject(get("https://en.wikipedia.org/w/api.php?action=query&format=json&prop=imageinfo&iiprop=url%7Cmime%7Csize%7Ctimestamp%7Cextmetadata&iiextmetadatafilter=DateTimeOriginal&iiurlwidth=960&titles=" +
+            val r = JSONObject(get("https://$wiki.wikipedia.org/w/api.php?action=query&format=json&prop=imageinfo&iiprop=url%7Cmime%7Csize%7Ctimestamp%7Cextmetadata&iiextmetadatafilter=DateTimeOriginal%7CCategories&iiurlwidth=960&titles=" +
                 enc(chunk.joinToString("|")))).optJSONObject("query")
             val fm = titleMap(r, chunk)
             val ps = r?.optJSONObject("pages") ?: return@forEach
             val byTitle = ps.keys().asSequence().map { ps.getJSONObject(it) }.associateBy { it.optString("title") }
             chunk.forEach { f ->
                 val ii = byTitle[fm[f]]?.optJSONArray("imageinfo")?.optJSONObject(0) ?: return@forEach
-                if (usable(f, ii)) out[f] = ii.optString("thumburl").ifBlank { ii.optString("url") }
+                if (usable(f, ii)) out[f] = Pic(ii.optString("thumburl").ifBlank { ii.optString("url") }, good(ii))
             }
         }
         return out
+    }
+
+    /**
+     * Lead picture and photo files of several articles on one Wikipedia, in one go (following "continue", since
+     * all articles share one limit). Title asked -> (lead file, other files). Used for the local-language articles.
+     */
+    private fun articles(wiki: String, titles: List<String>): Map<String, Pair<String?, List<String>>> {
+        if (titles.isEmpty()) return emptyMap()
+        val base = "https://$wiki.wikipedia.org/w/api.php?action=query&format=json&redirects=1&prop=pageimages%7Cimages&piprop=name&imlimit=max&titles=" +
+            enc(titles.distinct().joinToString("|"))
+        val lead = HashMap<String, String>(); val imgs = HashMap<String, MutableList<String>>()
+        var q0: JSONObject? = null; var cont = ""
+        for (round in 0 until 6) {
+            val r = JSONObject(get(base + cont))
+            val q = r.optJSONObject("query") ?: break
+            if (q0 == null) q0 = q
+            q.optJSONObject("pages")?.let { ps -> ps.keys().forEach { k ->
+                val pg = ps.getJSONObject(k); val t = pg.optString("title")
+                pg.optString("pageimage").takeIf { it.isNotBlank() }?.let { lead[t] = it }
+                pg.optJSONArray("images")?.let { a -> val l = imgs.getOrPut(t) { ArrayList() }; for (i in 0 until a.length()) l.add(a.getJSONObject(i).optString("title")) }
+            } }
+            val c = r.optJSONObject("continue") ?: break
+            cont = c.keys().asSequence().joinToString("") { k -> "&$k=" + enc(c.optString(k)) }
+        }
+        val names = titleMap(q0, titles)
+        return titles.associateWith { t ->
+            val n = names[t] ?: t
+            val files = imgs[n].orEmpty().filter { Regex("\\.(jpe?g|webp)$", RegexOption.IGNORE_CASE).containsMatchIn(it) && !junk.containsMatchIn(it) }.take(30)
+            lead[n]?.let { "File:" + it.replace('_', ' ') } to files
+        }
     }
 
     /**
@@ -465,7 +550,7 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
     /** Photos used inside the place's own Wikipedia article: chosen by editors, so they show the right place. */
     private fun articleImages(title: String): List<Img> {
         val r = JSONObject(get("https://en.wikipedia.org/w/api.php?action=query&format=json&redirects=1&generator=images&gimlimit=60" +
-            "&prop=imageinfo&iiprop=url%7Cmime%7Csize%7Ctimestamp%7Cextmetadata&iiextmetadatafilter=DateTimeOriginal&iiurlwidth=960&titles=" + enc(title.replace('_', ' '))))
+            "&prop=imageinfo&iiprop=url%7Cmime%7Csize%7Ctimestamp%7Cextmetadata&iiextmetadatafilter=DateTimeOriginal%7CCategories&iiurlwidth=960&titles=" + enc(title.replace('_', ' '))))
         val pages = r.optJSONObject("query")?.optJSONObject("pages") ?: return emptyList()
         val out = ArrayList<Img>()
         pages.keys().forEach { k ->
@@ -473,19 +558,19 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
             val ii = pg.optJSONArray("imageinfo")?.optJSONObject(0) ?: return@forEach
             val t = pg.optString("title")
             if (usable(t, ii))
-                out.add(Img(t, ii.optString("thumburl").ifBlank { ii.optString("url") }))
+                out.add(Img(t, ii.optString("thumburl").ifBlank { ii.optString("url") }, good(ii)))
         }
         return out
     }
 
     private fun commons(term: String, limit: Int = 20): List<Img> {
         val r = JSONObject(get("https://commons.wikimedia.org/w/api.php?action=query&format=json&generator=search&gsrnamespace=6&gsrlimit=$limit&gsrsearch=" +
-            enc("filetype:bitmap $term") + "&prop=imageinfo&iiprop=url%7Cmime%7Csize%7Ctimestamp%7Cextmetadata&iiextmetadatafilter=DateTimeOriginal&iiurlwidth=960"))
+            enc("filetype:bitmap $term") + "&prop=imageinfo&iiprop=url%7Cmime%7Csize%7Ctimestamp%7Cextmetadata&iiextmetadatafilter=DateTimeOriginal%7CCategories&iiurlwidth=960"))
         val pages = r.optJSONObject("query")?.optJSONObject("pages") ?: return emptyList()
         return pages.keys().asSequence().map { pages.getJSONObject(it) }.sortedBy { it.optInt("index", 999) }.mapNotNull { pg ->
             val ii = pg.optJSONArray("imageinfo")?.optJSONObject(0) ?: return@mapNotNull null
             val t = pg.optString("title")
-            if (usable(t, ii)) Img(t, ii.optString("thumburl").ifBlank { ii.optString("url") }) else null
+            if (usable(t, ii)) Img(t, ii.optString("thumburl").ifBlank { ii.optString("url") }, good(ii)) else null
         }.toList()
     }
 
@@ -505,7 +590,17 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
         "assumption", "virgin", "mary", "nicholas", "george", "michael", "peter", "paul", "john", "stephen", "francis", "anne", "barbara")
 
     /** Distinctive words of a name ("Cloth Hall (Sukiennice)" -> sukiennice). Pictures from search must contain one. */
-    private fun tokens(name: String) = plain(name).split(Regex("[^a-z0-9]+")).filter { it.length >= 4 && it !in generic }.toSet()
+    private fun tokens(name: String, local: Boolean = false) = plain(name).split(Regex("[^a-z0-9]+"))
+        .filter { it.length >= 4 && it !in generic && !(local && it in genericLocal) }.toSet()
+
+    /** The same building words in the local languages ("Kirche", "Palazzo", "Biserica"): never a place's name on their own. */
+    private val genericLocal = setOf("kirche", "dom", "schloss", "platz", "palais", "strasse", "garten", "brucke", "turm", "haus", "kapelle", "kloster",
+        "stift", "oper", "markt", "brunnen", "chiesa", "duomo", "palazzo", "piazza", "castello", "museo", "torre", "ponte", "giardino", "teatro",
+        "galleria", "fontana", "santa", "santo", "maria", "biserica", "palatul", "piata", "muzeul", "parcul", "gradina", "teatrul", "catedrala",
+        "manastirea", "kosciol", "katedra", "zamek", "rynek", "muzeum", "ulica", "brama", "wieza", "ogrod", "teatr", "bazylika", "kaplica",
+        "sfantul", "sfanta", "iglesia", "catedral", "palacio", "plaza", "museu", "igreja", "eglise", "chateau", "place", "musee", "pont", "jardin",
+        "kerk", "paleis", "plein", "kostel", "zamek", "namesti", "templom", "palota", "kirke", "slott", "kyrka", "torget", "crkva", "trg",
+        "national", "nationale", "nazionale", "narodowe", "narodni", "nacional")
 
     // German spellings without umlauts count too: "Schoenbrunn" in a file name matches Schönbrunn.
     private fun matches(title: String, toks: Set<String>): Boolean {
@@ -526,16 +621,23 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
         val picked = LinkedHashMap<String, String>() // file name -> url
         fun add(u: String) { val n = fileName(u); if (n.isNotBlank() && !picked.containsKey(n)) picked[n] = u }
         val qid = title?.let { t -> runCatching { qidOf(t) }.getOrNull() }
-        val cat = qid?.let { q -> runCatching { categories(listOf(q))[q] }.getOrNull() }
-        val toks = placeTokens(p, title) + tokens(cat.orEmpty()) + tokens(aliasOf(qid))
+        val item = qid?.let { q -> runCatching { items(listOf(q))[q] }.getOrNull() }
+        val cat = item?.cat
+        val toks = placeTokens(p, title) + itemTokens(item)
+        val l = lang
+        val local = if (l != null && item?.local != null) runCatching { articles(l, listOf(item.local))[item.local] }.getOrNull() else null
+        val linfo = if (l != null && local != null) runCatching { fileInfo(listOfNotNull(local.first) + local.second, l) }.getOrDefault(emptyMap()) else emptyMap()
+        val photo = item?.photo?.let { f -> runCatching { fileInfo(listOf("File:" + f.replace('_', ' '))).values.firstOrNull() }.getOrNull() }
+        var enLead: Pic? = null
+        var enFiles = emptyList<Pair<String, Pic>>()
         if (title != null && !articleChecked) {
-            leadImage(title)?.let(::add)
-            // Same rule as in bulk: other pictures in the article must be named after this place (or its Commons category).
-            articleImages(title).filter { matches(it.title, toks) }.forEach { add(it.thumb) }
+            enLead = leadImage(title)
+            enFiles = articleImages(title).map { it.title to Pic(it.thumb, it.good) }
         }
+        choose(enLead, enFiles, photo, local?.first?.let { linfo[it] }, local?.second.orEmpty().mapNotNull { f -> linfo[f]?.let { f to it } }, toks).forEach(::add)
         if (picked.size < 4 && cat != null) categoryPhotos(cat, toks).forEach(::add)
         if (picked.size < 3) {
-            val term = city.commons[p.id] ?: (p.name.substringBefore(" (") + " " + city.cityLocal)
+            val term = city.commons[p.id] ?: ((item?.label?.ifBlank { null } ?: p.name.substringBefore(" (")) + " " + city.cityLocal)
             commons(term, 14).filter { matches(it.title, toks) || city.commons.containsKey(p.id) && matches(it.title, tokens(term)) }.forEach { add(it.thumb) }
         }
         return picked.values.take(6)
