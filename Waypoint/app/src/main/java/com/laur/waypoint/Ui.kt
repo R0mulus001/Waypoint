@@ -136,12 +136,12 @@ fun TripApp(st: TripState, photos: Photos, dl: Downloader, gps: LatLng?, locatio
 
     if (!st.onboarded) { CityWelcome(ui, now); return }
 
-    // GPS only counts when you're actually in this city (within ~40 km); the real location takes over once you arrive.
-    // Before that (or with location off) distances come from a place you pick ("I'm near…"), and a place's own page
-    // falls back to the city centre, so it always shows how far it is and how long the walk takes.
+    // In the city (within ~40 km) distances come from your location. Away from it, a place's page shows the road trip
+    // from where you are. Only when the phone doesn't know where you are (location off, no signal) do they come from a
+    // place you pick ("I'm near…"); the pick is ignored as soon as the location works again.
     val away = gps != null && km(gps.lat, gps.lng, Trip.city.centerLat, Trip.city.centerLng) > 40
     val gpsHere = gps.takeIf { !away }
-    val picked = Trip.BY_ID[st.manual]
+    val picked = if (gps == null) Trip.BY_ID[st.manual] else null
     val here = gpsHere ?: picked?.let { LatLng(it.lat, it.lng) }
     val hereFrom = when { gpsHere != null -> null; picked != null -> "from ${picked.name}"; else -> null }
     BackHandler(ui.open == null) { onBack() }
@@ -291,7 +291,7 @@ fun NearbyTab(ui: Ui, now: Now, here: LatLng?, hasGps: Boolean, locationOn: Bool
         if (pick != null) item { Hero(ui, mo, pick, here) }
         item {
             SectionHead(if (here == null) "Top places" else "Around you",
-                if (here == null) (if (away) "Most important first. Pick a place above to see distances." else "Most important first.") else "Closest first. Tap Directions to get there.",
+                if (here == null) "Most important first." else "Closest first. Tap Directions to get there.",
                 Modifier.padding(top = 12.dp))
         }
         item {
@@ -415,8 +415,9 @@ fun LocRow(ui: Ui, hasGps: Boolean, locationOn: Boolean, away: Boolean = false) 
                 Box(Modifier.size(8.dp).clip(CircleShape).background(if (hasGps) c.visited else c.muted))
             }
             if (hasGps) { T("Using your location", Ty.label, color = c.muted); return@Row }
-            if (locationOn && !away) { T("Finding your location…", Ty.label, color = c.muted); return@Row }
-            T(if (away) "Not in ${Trip.city.name} yet. Distances from:" else "Location off. I'm near:", Ty.label, color = c.muted)
+            if (away) { T("Not in ${Trip.city.name} yet. Open a place for the trip from where you are.", Ty.label, color = c.muted); return@Row }
+            // No location (off, or no signal yet): pick where you are, until the phone finds it.
+            T(if (locationOn) "Finding location… I'm near:" else "Location off. I'm near:", Ty.label, color = c.muted)
             var exp by remember { mutableStateOf(false) }
             Box {
                 PickerChip(Trip.LANDMARKS.firstOrNull { it.first == ui.st.manual }?.second ?: "Choose a place", PinIcon, "Choose where you are") { exp = true }
