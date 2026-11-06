@@ -166,7 +166,7 @@ fun TripApp(st: TripState, photos: Photos, dl: Downloader, gps: LatLng?, locatio
             }
             NavBar(CITY_TABS, st.tab.takeIf { t -> CITY_TABS.any { it.key == t } } ?: "near") { st.setTab(it) }
         }
-        ui.open?.let { id -> Trip.BY_ID[id]?.let { PlaceSheet(ui, it, here, hereFrom) } }
+        ui.open?.let { id -> Trip.BY_ID[id]?.let { PlaceSheet(ui, it, here, hereFrom, gps.takeIf { away }) } }
     }
 }
 

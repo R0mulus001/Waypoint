@@ -66,7 +66,7 @@ import java.io.File
 /** A place, in Material's bottom sheet: drag handle, swipe down or back to close, scrim tap to close. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PlaceSheet(ui: Ui, p: Place, here: LatLng?, hereFrom: String? = null) {
+fun PlaceSheet(ui: Ui, p: Place, here: LatLng?, hereFrom: String? = null, far: LatLng? = null) {
     val c = LocalPal.current
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val maxH = (LocalConfiguration.current.screenHeightDp * 0.92f).dp
@@ -76,13 +76,13 @@ fun PlaceSheet(ui: Ui, p: Place, here: LatLng?, hereFrom: String? = null) {
         dragHandle = { BottomSheetDefaults.DragHandle(color = c.muted.copy(alpha = 0.5f)) },
     ) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
-            SheetContent(ui, p, here, hereFrom, maxH)
+            SheetContent(ui, p, here, hereFrom, far, maxH)
         }
     }
 }
 
 @Composable
-private fun SheetContent(ui: Ui, p: Place, here: LatLng?, hereFrom: String?, maxH: Dp) {
+private fun SheetContent(ui: Ui, p: Place, here: LatLng?, hereFrom: String?, far: LatLng?, maxH: Dp) {
     val c = LocalPal.current
     val st = ui.st
     val cat = Trip.catOf(p)
@@ -104,7 +104,7 @@ private fun SheetContent(ui: Ui, p: Place, here: LatLng?, hereFrom: String?, max
             if (!food && Trip.isFree(p)) FreeBadge()
         }
         T(p.name, 28.sp, FontWeight.SemiBold, family = Fonts.display, modifier = Modifier.semantics { heading() })
-        RouteLine(p, here, hereFrom)
+        RouteLine(p, here, hereFrom, far)
         T(p.desc + if (p.min > 0) " Plan about ${dur(p.min)}." else "", Ty.body)
 
         if (!food) {
@@ -133,24 +133,44 @@ private fun SheetContent(ui: Ui, p: Place, here: LatLng?, hereFrom: String?, max
 }
 
 /**
- * How far the place is and how long the walk takes: along real streets when online, an estimate otherwise.
- * From you when you're in the city; else from the place you picked, else from the city centre (said so on screen).
+ * How far the place is and how long it takes to get there.
+ * In the city: walking, along real streets (estimate offline), from you or from the place you picked.
+ * Away from the city (another town or country): the road trip from where you really are, by car.
+ * Location unknown: walking from the city centre, said so on screen.
  */
 @Composable
-private fun RouteLine(p: Place, here: LatLng?, hereFrom: String?) {
+private fun RouteLine(p: Place, here: LatLng?, hereFrom: String?, far: LatLng?) {
     val c = LocalPal.current
+    if (here == null && far != null) {
+        var drive by remember(p.id, far) { mutableStateOf<Route.Walk?>(null) }
+        var tried by remember(p.id, far) { mutableStateOf(false) }
+        LaunchedEffect(p.id, far) { drive = Route.drive(far, p); tried = true }
+        val (text, note) = Route.driveText(far, p, drive, tried)
+        RouteRow(text, note)
+        return
+    }
     val from = here ?: LatLng(Trip.city.centerLat, Trip.city.centerLng)
-    val label = if (here == null) "from the city centre" else hereFrom
+    val label = if (here == null) "from the city centre (your location isn't known)" else hereFrom
     var walk by remember(p.id, from) { mutableStateOf<Route.Walk?>(null) }
     LaunchedEffect(p.id, from) { walk = Route.walk(from, p) }
     val text = Route.text(from, p, walk)
     if (text.isEmpty()) return
+    val how = if (walk != null) "along the streets" else "estimated"
+    RouteRow(text, when {
+        text == "You're here" -> null
+        label != null -> label.replaceFirstChar { it.uppercase() } + ", " + how
+        else -> how.replaceFirstChar { it.uppercase() }
+    })
+}
+
+@Composable
+private fun RouteRow(text: String, note: String?) {
+    val c = LocalPal.current
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Icon(GoIcon, null, tint = c.accent, modifier = Modifier.size(18.dp))
         Column {
             T(text, Ty.body, FontWeight.SemiBold, c.accent)
-            if (label != null && text != "You're here") T(label.replaceFirstChar { it.uppercase() } + (if (walk != null) ", along the streets" else ", estimated"), Ty.caption, color = c.muted)
-            else if (walk == null && text != "You're here") T("Estimated", Ty.caption, color = c.muted)
+            if (note != null) T(note, Ty.caption, color = c.muted)
         }
     }
 }
