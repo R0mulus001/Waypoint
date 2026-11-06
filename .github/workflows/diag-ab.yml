@@ -16,7 +16,7 @@ jobs:
           MAPILLARY_TOKEN: ${{ secrets.MAPILLARY_TOKEN }}
           N: "14"
           FIXED: "1"
-          LEFT: "A"
+          LEFT: "B"
           RIGHT: "C"
       - name: Save results to the branch
         run: |
