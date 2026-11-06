@@ -72,6 +72,12 @@ def matches(title, toks):
     return any(k in t for k in toks)
 
 
+def taken(ii):
+    v = (((ii.get("extmetadata") or {}).get("DateTimeOriginal") or {}).get("value")) or ""
+    m = re.search(r"(?<!\d)(1[89]\d\d|20\d\d)(?!\d)", v)
+    return int(m.group(1)) if m else None
+
+
 def year(ii):
     v = (((ii.get("extmetadata") or {}).get("DateTimeOriginal") or {}).get("value")) or ""
     m = re.search(r"(?<!\d)(1[89]\d\d|20\d\d)(?!\d)", v)
@@ -92,7 +98,7 @@ BADCAT = re.compile(r"(?<![a-z])(paintings?|gemalde|dipinti|obrazy|engravings?|e
     r"manuscripts?|portraits?|artworks?|frescos?|frescoes|mosaics?|stained glass|tapestr\w*|miniatures|in art|historical images|historical photographs|"
     r"old photographs|postcards|scans?|maps?|plans|floor plans|cartograph\w*|territor\w*|bells?|glocken?|campane|dzwony|reliefs?|details?|"
     r"inscriptions?|plaques?|coins?|stamps?|documents?|signatures?|coats? of arms|heraldry|banners?|flags?|tombs?|epitaphs?|graves?|"
-    r"people|politicians|ceremon\w*|press conferences?|logos?|diagrams?|charts?|reconstructions?|models?|3d renders?)(?![a-z])")
+    r"people|politicians|ceremon\w*|press conferences?|logos?|diagrams?|charts?|reconstructions?|models?|3d renders?|protests?|demonstrations?|strikes|parades?|marathons?|concerts?)(?![a-z])")
 GOODCAT = re.compile(r"quality images|featured pictures|valued images")
 
 
@@ -176,7 +182,7 @@ def category_photos(cat, toks, mx=6, strict=False):
         if not ii:
             continue
         t = pg["title"]
-        if not photo_ok(t, ii, strict) or max(ii.get("width", 0), ii.get("height", 0)) < 1200:
+        if not photo_ok(t, ii, strict) or (strict and taken(ii) is None) or max(ii.get("width", 0), ii.get("height", 0)) < 1200:
             continue
         rows.append((matches(t, toks) + (2 if strict and GOODCAT.search(cats_of(ii)) else 0), ii.get("timestamp", ""), ii.get("thumburl") or ii.get("url"), t))
     rows.sort(key=lambda r: (r[0], r[1]), reverse=True)
@@ -236,7 +242,7 @@ def pick(p, city, variant):
     picked, seen, notes = [], set(), []
 
     def add(url, src, t=""):
-        n = plain(url.rsplit("/", 1)[-1].split("px-", 1)[-1])
+        n = plain(urllib.parse.unquote(url.rsplit("/", 1)[-1].split("px-", 1)[-1])).replace(" ", "_")
         if n and n not in seen:
             seen.add(n)
             picked.append((url, src, t))
@@ -257,6 +263,8 @@ def pick(p, city, variant):
 
     def consider(f, ii, src, need_match=True):
         if not ii or (need_match and not matches(f, toks)) or not photo_ok(f, ii, strict):
+            return False
+        if strict and need_match and taken(ii) is None:
             return False
         if strict and src not in ("lead", "P18", "LEAD-" + city["lang"]):
             rest.append((1 if GOODCAT.search(cats_of(ii)) else 0, len(rest), ii.get("thumburl"), src + ("Q" if GOODCAT.search(cats_of(ii)) else ""), f))
