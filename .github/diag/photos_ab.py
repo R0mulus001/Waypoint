@@ -88,6 +88,24 @@ def usable(title, ii):
             and not JUNK.search(title) and not MAPW.search(plain(title)) and y is not None and y >= MIN_YEAR)
 
 
+BADCAT = re.compile(r"(?<![a-z])(paintings?|gemalde|dipinti|obrazy|engravings?|etchings?|woodcuts?|lithographs?|prints|drawings?|illustrations?|"
+    r"manuscripts?|portraits?|artworks?|frescos?|frescoes|mosaics?|stained glass|tapestr\w*|miniatures|in art|historical images|historical photographs|"
+    r"old photographs|postcards|scans?|maps?|plans|floor plans|cartograph\w*|territor\w*|bells?|glocken?|campane|dzwony|reliefs?|details?|"
+    r"inscriptions?|plaques?|coins?|stamps?|documents?|signatures?|coats? of arms|heraldry|banners?|flags?|tombs?|epitaphs?|graves?|"
+    r"people|politicians|ceremon\w*|press conferences?|logos?|diagrams?|charts?|reconstructions?|models?|3d renders?)(?![a-z])")
+GOODCAT = re.compile(r"quality images|featured pictures|valued images")
+
+
+def cats_of(ii):
+    return plain((((ii.get("extmetadata") or {}).get("Categories") or {}).get("value")) or "")
+
+
+def photo_ok(title, ii, strict):
+    if not usable(title, ii):
+        return False
+    return not (strict and BADCAT.search(cats_of(ii).replace("_", " ")))
+
+
 def why_not(title, ii):
     w, h = ii.get("width", 0), ii.get("height", 0)
     y = year(ii)
@@ -99,7 +117,7 @@ def why_not(title, ii):
     return "ok"
 
 
-IIP = "&prop=imageinfo&iiprop=url%7Cmime%7Csize%7Ctimestamp%7Cextmetadata&iiextmetadatafilter=DateTimeOriginal&iiurlwidth=960"
+IIP = "&prop=imageinfo&iiprop=url%7Cmime%7Csize%7Ctimestamp%7Cextmetadata&iiextmetadatafilter=DateTimeOriginal%7CCategories&iiurlwidth=960"
 
 
 def file_info(wiki, files):
@@ -142,10 +160,14 @@ def wikidata(qid, lang):
     alias = link if link and not link.startswith("Category:") else ""
     local_title = (sl.get(lang + "wiki") or {}).get("title")
     local_label = ((e.get("labels") or {}).get(lang) or {}).get("value", "")
-    return cat, alias, local_title, local_label
+    try:
+        p18 = e["claims"]["P18"][0]["mainsnak"]["datavalue"]["value"]
+    except Exception:
+        p18 = ""
+    return cat, alias, local_title, local_label, p18
 
 
-def category_photos(cat, toks, mx=6):
+def category_photos(cat, toks, mx=6, strict=False):
     r = get("https://commons.wikimedia.org/w/api.php?action=query&format=json&generator=categorymembers&gcmtype=file&gcmsort=timestamp&gcmdir=desc"
             "&gcmlimit=80&gcmtitle=" + enc("Category:" + cat) + IIP)
     rows = []
@@ -154,21 +176,21 @@ def category_photos(cat, toks, mx=6):
         if not ii:
             continue
         t = pg["title"]
-        if not usable(t, ii) or max(ii.get("width", 0), ii.get("height", 0)) < 1200:
+        if not photo_ok(t, ii, strict) or max(ii.get("width", 0), ii.get("height", 0)) < 1200:
             continue
-        rows.append((matches(t, toks), ii.get("timestamp", ""), ii.get("thumburl") or ii.get("url"), t))
+        rows.append((matches(t, toks) + (2 if strict and GOODCAT.search(cats_of(ii)) else 0), ii.get("timestamp", ""), ii.get("thumburl") or ii.get("url"), t))
     rows.sort(key=lambda r: (r[0], r[1]), reverse=True)
-    return [(r[2], "cat" + ("*" if r[0] else ""), r[3]) for r in rows[:mx]]
+    return [(r[2], "cat" + ("*" if r[0] else "") + ("Q" if r[0] >= 2 else ""), r[3]) for r in rows[:mx]]
 
 
-def commons_search(term, limit=14):
+def commons_search(term, limit=14, strict=False):
     r = get("https://commons.wikimedia.org/w/api.php?action=query&format=json&generator=search&gsrnamespace=6&gsrlimit=%d&gsrsearch=%s%s"
             % (limit, enc("filetype:bitmap " + term), IIP))
     pages = sorted(((r.get("query") or {}).get("pages") or {}).values(), key=lambda p: p.get("index", 999))
     out = []
     for pg in pages:
         ii = (pg.get("imageinfo") or [None])[0]
-        if ii and usable(pg["title"], ii):
+        if ii and photo_ok(pg["title"], ii, strict):
             out.append((ii.get("thumburl") or ii.get("url"), pg["title"]))
     return out
 
@@ -220,48 +242,58 @@ def pick(p, city, variant):
             picked.append((url, src, t))
 
     lead, imgs, qid = article("en", p["title"])
-    cat = alias = ltitle = llabel = None
+    cat = alias = ltitle = llabel = p18 = None
+    strict = variant == "C"
     if qid:
-        cat, alias, ltitle, llabel = wikidata(qid, city["lang"])
+        cat, alias, ltitle, llabel, p18 = wikidata(qid, city["lang"])
     toks = tokens(p["title"].split(" (")[0]) | tokens(p["title"].replace("_", " ")) | tokens(cat or "") | tokens(alias or "")
     llead, limgs = None, []
-    if variant == "B":
+    if variant in "BC":
         toks |= tokens(llabel or "", True) | tokens(ltitle or "", True)
         if ltitle:
             llead, limgs, _ = article(city["lang"], ltitle)
-    info = file_info("en", (["File:" + lead.replace("_", " ")] if lead else []) + imgs)
+    info = file_info("en", (["File:" + lead.replace("_", " ")] if lead else []) + imgs + (["File:" + p18] if p18 and strict else []))
+    rest = []  # (quality, order, url, src, title) for C ranking
+
+    def consider(f, ii, src, need_match=True):
+        if not ii or (need_match and not matches(f, toks)) or not photo_ok(f, ii, strict):
+            return False
+        if strict and src not in ("lead", "P18", "LEAD-" + city["lang"]):
+            rest.append((1 if GOODCAT.search(cats_of(ii)) else 0, len(rest), ii.get("thumburl"), src + ("Q" if GOODCAT.search(cats_of(ii)) else ""), f))
+        else:
+            add(ii.get("thumburl"), src, f)
+        return True
+
     if lead:
         ii = info.get("File:" + lead.replace("_", " "))
-        if ii and usable("File:" + lead, ii):
-            add(ii.get("thumburl"), "lead", lead)
-        elif ii:
+        if not consider("File:" + lead, ii, "lead", False) and ii:
             notes.append("en lead rejected (%s)" % why_not(lead, ii))
+    if strict and p18:
+        ii = info.get("File:" + p18)
+        if not consider("File:" + p18, ii, "P18", False) and ii:
+            notes.append("P18 rejected (%s)" % why_not(p18, ii))
     for f in imgs:
-        ii = info.get(f)
-        if ii and matches(f, toks) and usable(f, ii):
-            add(ii.get("thumburl"), "art", f)
-    if variant == "B" and ltitle:
+        consider(f, info.get(f), "art")
+    if variant in "BC" and ltitle:
         linfo = file_info(city["lang"], (["File:" + llead.replace("_", " ")] if llead else []) + limgs)
-        # local-language file titles come back with the local namespace name; look them up by the original
         if llead:
             ii = linfo.get("File:" + llead.replace("_", " ")) or next((v for k, v in linfo.items() if k.endswith(":" + llead.replace("_", " "))), None)
-            if ii and usable(llead, ii):
-                add(ii.get("thumburl"), "LEAD-" + city["lang"], llead)
-            elif ii:
+            if not consider("File:" + llead, ii, "LEAD-" + city["lang"], False) and ii:
                 notes.append("%s lead rejected (%s)" % (city["lang"], why_not(llead, ii)))
         for f in limgs:
-            ii = linfo.get(f)
-            if ii and matches(f, toks) and usable(f, ii):
-                add(ii.get("thumburl"), "art-" + city["lang"], f)
+            consider(f, linfo.get(f), "art-" + city["lang"])
+    rest.sort(key=lambda r: (-r[0], r[1]))
+    for r in rest:
+        add(r[2], r[3], r[4])
     if len(picked) < 4 and cat:
-        for u, s, t in category_photos(cat, toks):
+        for u, s, t in category_photos(cat, toks, strict=strict):
             add(u, s, t)
     if len(picked) < 3:
-        if variant == "B":
+        if variant in "BC":
             term = (llabel or p["title"].split(" (")[0]) + " " + city["local"]
         else:
             term = p["title"].split(" (")[0] + " " + city["en"]
-        for u, t in commons_search(term):
+        for u, t in commons_search(term, strict=strict):
             if matches(t, toks):
                 add(u, "search", t)
     wiki = picked[:6]
@@ -275,7 +307,32 @@ EXCL = re.compile(r"district|borough|neighbourhood|neighborhood|quarter of|metro
                   r"school|hospital|street in|road in|hotel|embassy|ministry|bank|headquarters|stadium|club", re.I)
 
 
+FIXED = {
+    "vienna": ["St. Stephen's Cathedral, Vienna", "Schönbrunn Palace", "Hofburg", "Belvedere, Vienna", "Karlskirche", "Albertina",
+               "Austrian Parliament Building", "Café Central", "Kunsthistorisches Museum", "Vienna State Opera", "Votivkirche", "Hundertwasserhaus"],
+    "milan": ["Milan Cathedral", "Basilica of Sant'Ambrogio", "Castello Sforzesco", "Galleria Vittorio Emanuele II", "Santa Maria delle Grazie, Milan",
+              "Biblioteca Ambrosiana", "Basilica of Sant'Eustorgio", "Bosco Verticale", "La Scala", "Navigli"],
+    "krakow": ["Wawel Castle", "St. Mary's Basilica, Kraków", "Cloth Hall, Kraków", "Kraków Barbican", "Wawel Cathedral", "Collegium Maius",
+               "Church of Saints Peter and Paul, Kraków", "Schindler's Factory"],
+    "bucharest": ["Palace of the Parliament", "Romanian Athenaeum", "Stavropoleos Monastery", "Arcul de Triumf", "Carol Park",
+                  "Cotroceni Palace", "Lipscani", "Revolution Square, Bucharest"],
+}
+
+
+def fixed(city):
+    out = []
+    for t in FIXED[city["key"]]:
+        r = get("https://en.wikipedia.org/w/api.php?action=query&format=json&redirects=1&prop=coordinates&titles=" + enc(t))
+        pg = list(((r.get("query") or {}).get("pages") or {}).values())
+        c = (pg[0].get("coordinates") or [{}])[0] if pg else {}
+        if c:
+            out.append(dict(title=pg[0]["title"], lat=c["lat"], lng=c["lon"], desc="", views=0))
+    return out
+
+
 def sights(city, n):
+    if os.environ.get("FIXED"):
+        return fixed(city)
     g = get("https://en.wikipedia.org/w/api.php?action=query&format=json&list=geosearch&gsnamespace=0&gsradius=10000&gslimit=500&gscoord=%f%%7C%f"
             % (city["lat"], city["lng"]))
     geo = (g.get("query") or {}).get("geosearch") or []
@@ -322,8 +379,8 @@ def sheet(city, rows):
         fb = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16)
     except Exception:
         f = fb = ImageFont.load_default()
-    d.text((10, 10), "A = now (English)", fill="black", font=fb)
-    d.text((W + 30, 10), "B = + local names / local Wikipedia", fill="black", font=fb)
+    d.text((10, 10), "LEFT " + os.environ.get("LEFT", "A"), fill="black", font=fb)
+    d.text((W + 30, 10), "RIGHT " + os.environ.get("RIGHT", "B"), fill="black", font=fb)
     y = 40
     for name, a, b in rows:
         d.text((10, y), name, fill="#b00", font=fb)
@@ -356,8 +413,8 @@ if __name__ == "__main__":
         print("\n######## " + city["en"])
         rows = []
         for p in sights(city, n):
-            a, ma = pick(p, city, "A")
-            b, mb = pick(p, city, "B")
+            a, ma = pick(p, city, os.environ.get("LEFT", "A"))
+            b, mb = pick(p, city, os.environ.get("RIGHT", "B"))
             print("\n== %s  (%d views)  qid=%s cat=%s local=%s label=%s" % (p["title"], p["views"], ma["qid"], ma["cat"], mb["local"], mb["label"]))
             print("   A:", [s for _, s, _ in a], ma["notes"])
             print("   B:", [s for _, s, _ in b], mb["notes"])

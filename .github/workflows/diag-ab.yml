@@ -15,6 +15,9 @@ jobs:
         env:
           MAPILLARY_TOKEN: ${{ secrets.MAPILLARY_TOKEN }}
           N: "14"
+          FIXED: "1"
+          LEFT: "A"
+          RIGHT: "C"
       - name: Save results to the branch
         run: |
           git config user.name "waypoint-diag"; git config user.email "diag@users.noreply.github.com"
