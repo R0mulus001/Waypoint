@@ -346,7 +346,7 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
 
     // ---------- choosing photos ----------
 
-    private data class Img(val title: String, val thumb: String, val good: Boolean = false)
+    private data class Img(val title: String, val thumb: String, val good: Boolean = false, val dated: Boolean = true)
 
     /** Drawings, symbols and documents rather than photos of the place. */
     // Whole words only: the old substring match also threw away "Chartres", "Iconostasis", "Photograph of…",
@@ -378,7 +378,7 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
         "historical images|historical photographs|old photographs|postcards|scans?|maps?|plans|floor plans|cartograph[a-z]*|territor[a-z]*|" +
         "bells?|glocken?|campane|dzwony|reliefs?|details?|inscriptions?|plaques?|coins?|stamps?|documents?|signatures?|coats? of arms|" +
         "heraldry|banners?|flags?|tombs?|epitaphs?|graves?|people|politicians|ceremon[a-z]*|press conferences?|logos?|diagrams?|charts?|" +
-        "reconstructions?|models?|3d renders?)(?![a-z])")
+        "reconstructions?|models?|3d renders?|protests?|demonstrations?|strikes|parades?|marathons?|concerts?)(?![a-z])")
 
     /** Pictures Commons reviewers marked as good: sharp, well framed, usually the whole building. They go first. */
     private fun good(ii: JSONObject) = Regex("quality images|featured pictures|valued images").containsMatchIn(cats(ii))
@@ -389,10 +389,14 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
      * (old scans uploaded recently nearly always carry their real date, so they're still caught).
      */
     private fun recent(ii: JSONObject): Boolean {
-        val taken = ii.optJSONObject("extmetadata")?.optJSONObject("DateTimeOriginal")?.optString("value").orEmpty()
-        val year = Regex("(?<!\\d)(1[89]\\d\\d|20\\d\\d)(?!\\d)").find(taken)?.value?.toInt()
-            ?: ii.optString("timestamp").take(4).toIntOrNull() ?: return false
+        val year = taken(ii) ?: ii.optString("timestamp").take(4).toIntOrNull() ?: return false
         return year >= MIN_YEAR
+    }
+
+    /** Year the photo was taken, if the file says. */
+    private fun taken(ii: JSONObject): Int? {
+        val t = ii.optJSONObject("extmetadata")?.optJSONObject("DateTimeOriginal")?.optString("value").orEmpty()
+        return Regex("(?<!\\d)(1[89]\\d\\d|20\\d\\d)(?!\\d)").find(t)?.value?.toInt()
     }
 
     /** The photo at the top of the place's Wikipedia article: almost always the landmark itself. */
@@ -457,7 +461,8 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
 
     /**
      * The order photos are shown in: the English article's lead photo, Wikidata's chosen photo, the local article's lead
-     * photo; then the other photos of both articles (named after the place), the ones Commons reviewers marked as good first.
+     * photo; then the other photos of both articles (named after the place and with the date they were taken), the ones
+     * Commons reviewers marked as good first.
      */
     private fun ordered(leads: List<Pic?>, rest: List<Pic>): List<String> =
         leads.filterNotNull().map { it.url } + rest.withIndex().sortedWith(compareByDescending<IndexedValue<Pic>> { it.value.good }.thenBy { it.index }).map { it.value.url }
@@ -467,7 +472,7 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
      * boxes at the bottom), so their other pictures must be named after this place, in English or the local language.
      */
     private fun choose(enLead: Pic?, enFiles: List<Pair<String, Pic>>, photo: Pic?, localLead: Pic?, localFiles: List<Pair<String, Pic>>, toks: Set<String>): List<String> =
-        ordered(listOf(enLead, photo, localLead), (enFiles + localFiles).filter { matches(it.first, toks) }.map { it.second })
+        ordered(listOf(enLead, photo, localLead), (enFiles + localFiles).filter { matches(it.first, toks) && it.second.dated }.map { it.second })
 
     /**
      * Photos straight from a place's Commons category, with the usual checks (age, size, no maps). Pictures named after
@@ -482,13 +487,14 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
         return pages.keys().asSequence().map { pages.getJSONObject(it) }.mapNotNull { pg ->
             val ii = pg.optJSONArray("imageinfo")?.optJSONObject(0) ?: return@mapNotNull null
             val t = pg.optString("title")
-            if (!usable(t, ii) || maxOf(ii.optInt("width"), ii.optInt("height")) < 1200) return@mapNotNull null
+            if (!usable(t, ii) || taken(ii) == null || maxOf(ii.optInt("width"), ii.optInt("height")) < 1200) return@mapNotNull null
             Triple((if (matches(t, toks)) 1 else 0) + (if (good(ii)) 2 else 0), ii.optString("timestamp"), ii.optString("thumburl").ifBlank { ii.optString("url") })
         }.sortedWith(compareByDescending<Triple<Int, String, String>> { it.first }.thenByDescending { it.second })
             .map { it.third }.take(max).toList()
     }
 
-    private data class Pic(val url: String, val good: Boolean)
+    /** [dated]: the file says when the photo was taken (scans of old drawings usually only have an upload date). */
+    private data class Pic(val url: String, val good: Boolean, val dated: Boolean = true)
 
     /** Size, type and date of some files; only the ones fit to show, as file title -> picture address. [wiki]: language of the Wikipedia asked. */
     private fun fileInfo(files: List<String>, wiki: String = "en"): Map<String, Pic> {
@@ -501,7 +507,7 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
             val byTitle = ps.keys().asSequence().map { ps.getJSONObject(it) }.associateBy { it.optString("title") }
             chunk.forEach { f ->
                 val ii = byTitle[fm[f]]?.optJSONArray("imageinfo")?.optJSONObject(0) ?: return@forEach
-                if (usable(f, ii)) out[f] = Pic(ii.optString("thumburl").ifBlank { ii.optString("url") }, good(ii))
+                if (usable(f, ii)) out[f] = Pic(ii.optString("thumburl").ifBlank { ii.optString("url") }, good(ii), taken(ii) != null)
             }
         }
         return out
@@ -558,7 +564,7 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
             val ii = pg.optJSONArray("imageinfo")?.optJSONObject(0) ?: return@forEach
             val t = pg.optString("title")
             if (usable(t, ii))
-                out.add(Img(t, ii.optString("thumburl").ifBlank { ii.optString("url") }, good(ii)))
+                out.add(Img(t, ii.optString("thumburl").ifBlank { ii.optString("url") }, good(ii), taken(ii) != null))
         }
         return out
     }
@@ -575,7 +581,8 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
     }
 
     private fun plain(s: String) = Normalizer.normalize(s, Normalizer.Form.NFD).replace(Regex("\\p{M}+"), "").replace("ł", "l").replace("Ł", "L").lowercase()
-    private fun fileName(url: String) = plain(url.substringAfterLast("/").substringAfter("px-"))
+    private fun fileName(url: String) = plain(runCatching { java.net.URLDecoder.decode(url.substringAfterLast("/").substringAfter("px-").replace("+", "%2B"), "UTF-8") }
+        .getOrDefault(url.substringAfterLast("/").substringAfter("px-"))).replace(' ', '_')
 
     private val generic = setOf("cafe", "caffe", "the", "and", "pod", "bar", "mleczny", "books", "lounge", "chocolate", "plac", "nowy", "cloth", "hall",
         "pierogarnia", "krakow", "wodka", "restaurant", "restaurante", "gasthaus", "zum", "zur", "der", "die", "das", "wien", "vienna", "stalls", "food",
@@ -632,7 +639,7 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
         var enFiles = emptyList<Pair<String, Pic>>()
         if (title != null && !articleChecked) {
             enLead = leadImage(title)
-            enFiles = articleImages(title).map { it.title to Pic(it.thumb, it.good) }
+            enFiles = articleImages(title).map { it.title to Pic(it.thumb, it.good, it.dated) }
         }
         choose(enLead, enFiles, photo, local?.first?.let { linfo[it] }, local?.second.orEmpty().mapNotNull { f -> linfo[f]?.let { f to it } }, toks).forEach(::add)
         if (picked.size < 4 && cat != null) categoryPhotos(cat, toks).forEach(::add)
