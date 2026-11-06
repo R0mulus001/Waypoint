@@ -1,0 +1,22 @@
+name: Diag photos A/B
+on:
+  push:
+    branches: ["diag/photos-ab"]
+permissions:
+  contents: write
+jobs:
+  ab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install pillow
+      - run: python3 .github/diag/photos_ab.py vienna milan krakow bucharest
+        env:
+          MAPILLARY_TOKEN: ${{ secrets.MAPILLARY_TOKEN }}
+          N: "14"
+      - name: Save results to the branch
+        run: |
+          git config user.name "waypoint-diag"; git config user.email "diag@users.noreply.github.com"
+          mkdir -p .github/diag/out && cp out/* .github/diag/out/
+          git add .github/diag/out && git commit -m "diag results [skip ci]" && git push
