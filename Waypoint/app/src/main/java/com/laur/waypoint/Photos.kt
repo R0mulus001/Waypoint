@@ -581,8 +581,11 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
     }
 
     private fun plain(s: String) = Normalizer.normalize(s, Normalizer.Form.NFD).replace(Regex("\\p{M}+"), "").replace("ł", "l").replace("Ł", "L").lowercase()
-    private fun fileName(url: String) = plain(runCatching { java.net.URLDecoder.decode(url.substringAfterLast("/").substringAfter("px-").replace("+", "%2B"), "UTF-8") }
-        .getOrDefault(url.substringAfterLast("/").substringAfter("px-"))).replace(' ', '_')
+    // Links now end in "?utm_source=<the wiki asked>", so the same photo from two wikis must be compared without it.
+    private fun fileName(url: String): String {
+        val f = url.substringBefore('?').substringAfterLast("/").substringAfter("px-")
+        return plain(runCatching { java.net.URLDecoder.decode(f.replace("+", "%2B"), "UTF-8") }.getOrDefault(f)).replace(' ', '_')
+    }
 
     private val generic = setOf("cafe", "caffe", "the", "and", "pod", "bar", "mleczny", "books", "lounge", "chocolate", "plac", "nowy", "cloth", "hall",
         "pierogarnia", "krakow", "wodka", "restaurant", "restaurante", "gasthaus", "zum", "zur", "der", "die", "das", "wien", "vienna", "stalls", "food",
