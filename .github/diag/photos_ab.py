@@ -242,7 +242,7 @@ def pick(p, city, variant):
     picked, seen, notes = [], set(), []
 
     def add(url, src, t=""):
-        n = plain(urllib.parse.unquote(url.rsplit("/", 1)[-1].split("px-", 1)[-1])).replace(" ", "_")
+        n = plain(urllib.parse.unquote(url.split("?")[0].rsplit("/", 1)[-1].split("px-", 1)[-1])).replace(" ", "_")
         if n and n not in seen:
             seen.add(n)
             picked.append((url, src, t))
