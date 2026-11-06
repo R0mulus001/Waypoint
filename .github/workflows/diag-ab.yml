@@ -11,7 +11,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: pip install pillow
+      - run: python3 .github/diag/urls.py
       - run: python3 .github/diag/photos_ab.py vienna milan krakow bucharest
+        if: false
         env:
           MAPILLARY_TOKEN: ${{ secrets.MAPILLARY_TOKEN }}
           N: "14"
@@ -19,6 +21,7 @@ jobs:
           LEFT: "B"
           RIGHT: "C"
       - name: Save results to the branch
+        if: false
         run: |
           git config user.name "waypoint-diag"; git config user.email "diag@users.noreply.github.com"
           mkdir -p .github/diag/out && cp out/* .github/diag/out/
