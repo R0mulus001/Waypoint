@@ -243,6 +243,13 @@ class GuideBuilder(private val ctx: Context) {
 
     /** Builds a full city guide and saves it on the phone. Calls [progress] with what it's doing. */
     suspend fun build(country: Country, name: String, wiki: String?, at: Pair<Double, Double>?, progress: (String) -> Unit): Built = withContext(Dispatchers.IO) {
+        // A ready-made guide (built on GitHub, with checked photos) opens in seconds; other cities are built here as before.
+        val packKey = country.code.lowercase() + "-" + slug(name)
+        progress("Looking for a ready-made guide")
+        runCatching { Packs.city(country.code, packKey) }.getOrNull()?.let { (c, hol) ->
+            progress("Opening the ready-made $name guide")
+            return@withContext Built(fromPack(country, name, c, hol), foodLater = false)
+        }
         progress("Finding $name on the map")
         val (lat, lng) = at ?: locate(country, name, wiki) ?: throw RuntimeException("Couldn't find $name on the map.")
 
@@ -287,6 +294,44 @@ class GuideBuilder(private val ctx: Context) {
             // Leaving the screen, or an error, stops the side lookups too; a deferred food lookup keeps going.
             if (!keepFood) side.cancel()
         }
+    }
+
+    /** A guide from ready-made data: the same day plans and themes as a guide built here, plus texts and the photo pack. */
+    private fun fromPack(country: Country, name: String, c: JSONObject, hol: JSONObject): File {
+        val sights = c.getJSONArray("sights").let { a -> List(a.length()) { a.getJSONObject(it) } }.map { s ->
+            Sight(s.getLong("pageId"), s.getString("title"), s.getDouble("lat"), s.getDouble("lng"), s.optString("desc"),
+                s.optLong("views"), s.optString("cat", "sight"), s.optBoolean("out"))
+        }
+        val eats = c.getJSONArray("eats").let { a -> List(a.length()) { a.getJSONObject(it) } }.map { e ->
+            Eat(e.getString("id"), e.getString("name"), e.getDouble("lat"), e.getDouble("lng"), e.getString("kind"), e.optString("desc"), e.optInt("score"))
+        }
+        val key = c.getString("key")
+        val lat = c.getDouble("centerLat"); val lng = c.getDouble("centerLng")
+        val json = assemble(key, country, name, lat, lng, sights, eats)
+        json.put("holidays", hol)
+        val zone = ZoneId.of(country.tz)
+        val year = LocalDate.now(zone).year
+        json.put("sunsets", JSONArray((1..12).map { m -> sunsetLocal(LocalDate.of(year, m, 15), lat, lng, zone) }))
+        json.put("info", c.optJSONObject("info") ?: JSONObject())
+        json.put("packPhotos", c.optJSONObject("photos") ?: JSONObject())
+        c.optJSONObject("photoPack")?.let { json.put("pack", it) }
+        json.put("packBuilt", c.optString("built"))
+        val f = File(dir, "$key.json")
+        City(json) // check the guide opens before saving it
+        f.writeAtomically(json.toString())
+        return f
+    }
+
+    /**
+     * A guide on the phone that a newer ready-made version exists for (or one built here before the city was ready):
+     * replaced by the ready-made one. Visited places and notes stay, since places keep their ids.
+     */
+    suspend fun upgrade(city: City): File? = withContext(Dispatchers.IO) {
+        if (!city.generated || city.countryCode.isBlank()) return@withContext null
+        if (!runCatching { Packs.newer(city.countryCode, city.key, city.packBuilt) }.getOrDefault(false)) return@withContext null
+        val country = Europe.byCode(city.countryCode) ?: return@withContext null
+        val (c, hol) = Packs.city(city.countryCode, city.key) ?: return@withContext null
+        runCatching { fromPack(country, city.name, c, hol) }.getOrNull()
     }
 
     private fun locate(country: Country, name: String, wiki: String?): Pair<Double, Double>? {

@@ -69,6 +69,7 @@ class MainActivity : ComponentActivity() {
         bars(false)
         Fonts.init(this)
         Europe.load(applicationContext)
+        Packs.init(applicationContext)
         Hub.init(applicationContext)
         val cities = City.loadAll(applicationContext)
         cities.firstOrNull()?.let { Trip.city = it } // set again when a city is opened; there may be none yet
