@@ -381,6 +381,15 @@ fun OfflineRow(ui: Ui) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             CardHead(PhotoIcon, "Offline photos")
             when {
+                dl.packing -> {
+                    fun mb(b: Long) = String.format(java.util.Locale.US, "%.0f", b / 1_000_000.0)
+                    T("Downloading photos… ${mb(dl.packDone)} of ${mb(dl.packTotal)} MB", Ty.body, FontWeight.SemiBold)
+                    Bar(if (dl.packTotal <= 0) 0f else (dl.packDone.toFloat() / dl.packTotal).coerceIn(0f, 1f))
+                    T("Checked photos of every place, saved on your phone so they work without internet. It keeps going if you leave this screen.",
+                        Ty.label, color = c.muted)
+                    T("This is about ${mb(dl.packTotal)} MB. On mobile data it uses part of your allowance, so Wi-Fi is better if your plan isn't unlimited.",
+                        Ty.label, color = c.muted)
+                }
                 dl.running -> {
                     T("Downloading… ${dl.done} of ${dl.total} places", Ty.body, FontWeight.SemiBold)
                     Bar(if (dl.total == 0) 0f else dl.done / dl.total.toFloat())

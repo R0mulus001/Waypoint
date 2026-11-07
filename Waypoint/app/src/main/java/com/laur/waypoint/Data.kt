@@ -34,6 +34,8 @@ data class FlagDef(val stripes: List<Long>, val vertical: Boolean, val emoji: St
 
 data class Accent(val light: Long, val lightSoft: Long, val dark: Long, val darkSoft: Long, val darkFg: Long, val bar: Long)
 
+data class PackRef(val file: String, val bytes: Long, val version: String)
+
 class City(j: JSONObject) {
     val key = j.getString("key")
     /** Built on the phone from Wikipedia and OpenStreetMap (as opposed to a hand-made guide shipped with the app). */
@@ -87,6 +89,11 @@ class City(j: JSONObject) {
     val price = j.getJSONArray("price").strings()
     val commons = j.getJSONObject("commons").strMap()
     val holidays = j.getJSONObject("holidays").strMap()
+    /** Ready-made guides: the photo pack to download, its places' texts and photo lists, and when the data was built. */
+    val pack: PackRef? = j.optJSONObject("pack")?.let { PackRef(it.getString("file"), it.optLong("bytes"), it.optString("version")) }
+    val packInfo: JSONObject = j.optJSONObject("info") ?: JSONObject()
+    val packPhotos: JSONObject = j.optJSONObject("packPhotos") ?: JSONObject()
+    val packBuilt: String? = j.optString("packBuilt").ifBlank { null }
     /** Always 12 entries (one per month) in HH:mm, so indexing by month is safe. */
     val sunsets = j.getJSONArray("sunsets").strings().let { s ->
         List(12) { m -> s.getOrNull(m)?.takeIf { Regex("\\d{1,2}:\\d{2}").matches(it) } ?: "18:00" }

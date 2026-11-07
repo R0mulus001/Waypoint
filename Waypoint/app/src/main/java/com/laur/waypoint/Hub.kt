@@ -83,6 +83,8 @@ class CityStores(private val ctx: Context, initial: List<City>) {
         City(JSONObject(java.io.File(builder.dir, "$key.json").readText()))
     }.getOrNull()?.also { add(it) }
     fun add(c: City) { cities.removeAll { it.key == c.key }; cities.add(c); photos.remove(c.key); downloads.remove(c.key)?.stop() }
+    /** Swaps a guide on the phone for its ready-made version when one is out (quietly, in the background). */
+    fun upgrade(c: City) { scope.launch { builder.upgrade(c)?.let { f -> runCatching { add(City(JSONObject(f.readText()))) } } } }
 }
 
 /** What the start screens are showing (not saved; the open city is). */
@@ -129,7 +131,8 @@ fun WaypointApp(
 /** Opens a city that already has a guide (adding it to My trips), or starts building one. */
 private fun openOrBuild(stores: CityStores, code: String, name: String, wiki: String?, guide: String?, at: Pair<Double, Double>?, go: (Screen) -> Unit) {
     val key = guide ?: (code.lowercase() + "-" + slug(name))
-    if (stores.findOrLoad(key) != null) { Hub.addTrip(key); Hub.open(key) }
+    val have = stores.findOrLoad(key)
+    if (have != null) { Hub.addTrip(key); Hub.open(key); stores.upgrade(have) }
     else go(Screen.Build(code, name, wiki, at))
 }
 
@@ -214,7 +217,7 @@ fun HomeScreen(stores: CityStores, onAdd: () -> Unit) {
             if (title != null) item(key = "h-$key") { SectionLabel(title, if (isNow) c.accent else c.muted) }
             itemsIndexed(list, key = { _, it -> it.key }) { i, city ->
                 TripRow(stores, city, i, list.size, isNow, arranging,
-                    onOpen = { Hub.open(city.key) }, onRemove = { removing = city },
+                    onOpen = { Hub.open(city.key); stores.upgrade(city) }, onRemove = { removing = city },
                     onUp = if (i > 0) ({ Hub.swapTrips(city.key, list[i - 1].key) }) else null,
                     onDown = if (i < list.size - 1) ({ Hub.swapTrips(city.key, list[i + 1].key) }) else null)
             }
@@ -244,7 +247,7 @@ fun HomeScreen(stores: CityStores, onAdd: () -> Unit) {
         }
         val shown = diary.take(12)
         itemsIndexed(shown, key = { _, it -> "d-" + it.first.key + "|" + it.second.id }) { i, (city, p, at) ->
-            GroupRow(i, shown.size, onClick = { Hub.open(city.key); stores.state(city).setTab("visited") }, dividerInset = 64.dp) {
+            GroupRow(i, shown.size, onClick = { Hub.open(city.key); stores.upgrade(city); stores.state(city).setTab("visited") }, dividerInset = 64.dp) {
                 Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     FlagTile(codeOf(city), 36.dp, label = city.country)
                     Column(Modifier.weight(1f)) {

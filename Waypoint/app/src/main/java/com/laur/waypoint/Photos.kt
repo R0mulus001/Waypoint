@@ -7,6 +7,7 @@ import android.graphics.BitmapFactory
 import android.util.LruCache
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.CoroutineScope
@@ -126,11 +127,64 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
     /** Places whose lookup is finished (with or without photos). */
     fun donePlaces(): Int = db.query("SELECT id FROM checked") { it.getString(0) }.count { it in city.byId }
 
+    // ---------- ready-made photo pack (see Packs) ----------
+
+    /** The city's ready-made photos are published but not on the phone yet (or a newer pack is out). */
+    fun packWaiting() = city.pack != null && db.kvGet("pack") != city.pack.version
+
+    private fun packText(id: String) = city.packInfo.optJSONObject(id)?.let { it.optString("extract") to it.optString("page") }?.takeIf { it.first.isNotBlank() }
+
+    /**
+     * Downloads the city's photo pack and puts every photo in place, the same way photos found one by one are saved,
+     * so everything else (offline use, the photo strip, Download all) works as before.
+     */
+    fun installPack(progress: (Long, Long) -> Unit) {
+        val ref = city.pack ?: return
+        val zip = File(ctx.filesDir, "packs/${city.key}.zip")
+        zip.parentFile?.mkdirs()
+        if (!zip.exists()) Packs.download(ref.file, zip, progress)
+        val tmp = File(dir.parentFile, "${city.key}.unpack").apply { deleteRecursively(); mkdirs() }
+        try {
+            java.util.zip.ZipInputStream(zip.inputStream().buffered()).use { z ->
+                while (true) {
+                    val e = z.nextEntry ?: break
+                    val name = File(e.name).name
+                    if (!e.isDirectory && name.isNotBlank()) File(tmp, name).outputStream().use { z.copyTo(it) }
+                }
+            }
+        } catch (e: java.util.zip.ZipException) { zip.delete(); throw java.io.IOException("broken download", e) }
+        val w = db.writableDatabase
+        w.beginTransaction()
+        try {
+            city.packPhotos.keys().forEach { id ->
+                val list = city.packPhotos.optJSONArray(id) ?: return@forEach
+                val files = (0 until list.length()).mapNotNull { list.optJSONObject(it)?.optString("file")?.takeIf { f -> File(tmp, f).exists() } }
+                // A place with no photos in the pack keeps what it had (or is looked up online later).
+                if (files.isEmpty() && list.length() > 0) return@forEach
+                db.query("SELECT file FROM photos WHERE id=?", arrayOf(id)) { File(dir, it.getString(0)) }.forEach { it.delete() }
+                db.delete("photos", id)
+                files.forEachIndexed { k, f ->
+                    val to = File(dir, f)
+                    to.delete(); File(tmp, f).renameTo(to)
+                    db.put("photos", ContentValues().apply { put("id", id); put("idx", k); put("file", f) })
+                }
+                packText(id)?.let { (ex, pg) -> db.put("info", ContentValues().apply { put("id", id); put("extract", ex); put("page", pg) }) }
+                markDone(id)
+            }
+            db.kvPut("pack", ref.version)
+            w.setTransactionSuccessful()
+        } finally { w.endTransaction() }
+        tmp.deleteRecursively()
+        zip.delete()
+    }
+
     suspend fun load(p: Place): PlaceInfo = withContext(Dispatchers.IO) {
         lock(p.id).withLock {
             val have = saved(p.id)
             // Finished before: show what was found, even if that's nothing (no new lookups every time it's opened).
             if (isDone(p.id)) return@withLock have ?: PlaceInfo("", "", emptyList())
+            // The ready-made photos are on their way: show the text now, the photos come with the pack.
+            if (packWaiting() && city.packPhotos.has(p.id)) return@withLock PlaceInfo(packText(p.id)?.first ?: "", packText(p.id)?.second ?: "", have?.photos ?: emptyList())
             var textOk = true; var urlsOk = true; var netFail = false
             val got = pre[p.id]
             val text = if (p.isFood) null else if (got != null) got.text
@@ -235,6 +289,7 @@ class Photos(private val ctx: Context, private val db: TripDb, private val city:
     }
 
     private fun fetchText(p: Place): Pair<String, String>? {
+        packText(p.id)?.let { return it }
         city.wiki[p.id]?.let { t ->
             val j = JSONObject(get("https://en.wikipedia.org/api/rest_v1/page/summary/" + enc(t)))
             val ex = j.optString("extract")
@@ -679,13 +734,20 @@ class Downloader(private val photos: Photos, private val city: City, private val
     var total by mutableIntStateOf(0); private set
     var withPhotos by mutableIntStateOf(photos.savedPlaces()); private set
     var finished by mutableIntStateOf(photos.donePlaces()); private set
+    /** Downloading the city's ready-made photo pack: bytes so far and in total. */
+    var packing by mutableStateOf(false); private set
+    var packDone by mutableLongStateOf(0L); private set
+    var packTotal by mutableLongStateOf(city.pack?.bytes ?: 0L); private set
     private var job: kotlinx.coroutines.Job? = null
 
     val places get() = city.places.size
     /** Places whose lookup failed (busy server, no signal) and should be tried again. */
     val failed get() = (places - finished).coerceAtLeast(0)
+    /** Ready-made photos exist for this city (they download on their own when the city is opened). */
+    val hasPack get() = city.pack != null
 
-    init { if (photos.wantAll()) start() }
+    // A ready-made city fetches its photo pack right away; other cities wait for Download all.
+    init { if (photos.wantAll() || photos.packWaiting()) start() }
 
     fun refresh() {
         withPhotos = photos.savedPlaces(); finished = photos.donePlaces()
@@ -699,6 +761,19 @@ class Downloader(private val photos: Photos, private val city: City, private val
         photos.setWantAll()
         job = scope.launch {
             try {
+                // Ready-made photos first: one download for the whole city, tried again when the connection drops.
+                var tries = 0
+                while (photos.packWaiting()) {
+                    running = true; packing = true
+                    val ok = withContext(Dispatchers.IO) {
+                        runCatching { photos.installPack { d, t -> packDone = d; if (t > 0) packTotal = t } }
+                            .onFailure { android.util.Log.w("Waypoint", "photo pack: ${it.javaClass.simpleName} ${it.message}") }.isSuccess
+                    }
+                    refresh()
+                    if (ok) break
+                    kotlinx.coroutines.delay(longArrayOf(5_000, 15_000, 30_000, 60_000, 120_000)[minOf(tries++, 4)])
+                }
+                packing = false
                 var pass = 0
                 while (true) {
                     // Hidden check first: anything saved but broken goes back on the list.
@@ -718,7 +793,7 @@ class Downloader(private val photos: Photos, private val city: City, private val
                 }
             } finally {
                 refresh()
-                running = false
+                running = false; packing = false
             }
         }
     }
