@@ -143,4 +143,5 @@ jobs:
           SKIP: ${{ inputs.skip_ready }}
         run: |
           next="${THEN%%;*}"; rest=""; [ "$next" != "$THEN" ] && rest="${THEN#*;}"
-          gh workflow run data-europe.yml -R "${{ github.repository }}" -f countries="$next" -f skip_ready="$SKIP" -f then="$rest"
+          gh api -X POST "repos/${{ github.repository }}/actions/workflows/data-europe.yml/dispatches" -f ref=main \
+            -f "inputs[countries]=$next" -f "inputs[skip_ready]=$SKIP" -f "inputs[then]=$rest"
