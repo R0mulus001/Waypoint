@@ -1,0 +1,132 @@
+name: Build city data (many countries)
+# Builds many cities at once (20 in parallel), then packs and publishes each country.
+# GitHub allows 256 jobs per run, so all of Europe takes 3 runs (e.g. countries A-F, G-M, N-Z).
+on:
+  workflow_dispatch:
+    inputs:
+      countries:
+        description: "Country codes, comma separated (e.g. DK,AT,RO)"
+        required: true
+      skip_ready:
+        description: "Skip cities that are already published"
+        type: boolean
+        default: true
+permissions:
+  contents: write
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      cities: ${{ steps.p.outputs.cities }}
+      countries: ${{ steps.p.outputs.countries }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: p
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CCS: ${{ inputs.countries }}
+          SKIP: ${{ inputs.skip_ready }}
+        run: |
+          gh release download data -p index.json -D old 2>/dev/null || true
+          python - <<'EOF'
+          import json, os, re, unicodedata
+          def slug(s):
+              s = unicodedata.normalize("NFD", s); s = re.sub(r"[̀-ͯ]+", "", s).replace("ł", "l").lower()
+              return re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+          want = [c.strip().upper() for c in os.environ["CCS"].split(",") if c.strip()]
+          ready = set()
+          if os.environ.get("SKIP") == "true" and os.path.exists("old/index.json"):
+              for cc, v in json.load(open("old/index.json")).get("countries", {}).items():
+                  ready |= set(v.get("cities", {}))
+          rows = []
+          for co in json.load(open("Waypoint/app/src/main/assets/europe.json")):
+              if co["code"] in want:
+                  for c in co["cities"]:
+                      key = co["code"].lower() + "-" + slug(c["name"])
+                      if key not in ready:
+                          rows.append({"cc": co["code"], "name": c["name"], "wiki": c["wiki"], "key": key})
+          rows = rows[:250]
+          print(len(rows), "cities")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write("cities=" + json.dumps(rows, ensure_ascii=False) + "\n")
+              f.write("countries=" + json.dumps(sorted({r["cc"] for r in rows})) + "\n")
+          EOF
+
+  city:
+    needs: plan
+    if: needs.plan.outputs.cities != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        c: ${{ fromJSON(needs.plan.outputs.cities) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pipeline/requirements.txt
+      - name: Install
+        run: |
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.5.1
+          pip install -r pipeline/requirements.txt
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-clip-vit-b32
+      - name: Build ${{ matrix.c.name }}
+        env:
+          MAPILLARY_TOKEN: ${{ secrets.MAPILLARY_TOKEN }}
+          FLICKR_KEY: ${{ secrets.FLICKR_KEY }}
+        run: python pipeline/build_city.py --country "${{ matrix.c.cc }}" --city "${{ matrix.c.name }}" --wiki "${{ matrix.c.wiki }}" --out out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: city-${{ matrix.c.key }}
+          path: out/${{ matrix.c.key }}
+          retention-days: 3
+          compression-level: 0
+
+  pack:
+    needs: [plan, city]
+    if: always() && needs.plan.outputs.cities != '[]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: city-*
+          path: art
+      - name: Pack and publish each country
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CCS: ${{ needs.plan.outputs.countries }}
+        run: |
+          mkdir -p out
+          for d in art/city-*; do [ -f "$d/city.json" ] && mv "$d" "out/${d#art/city-}"; done
+          ls out
+          gh release view data >/dev/null 2>&1 || gh release create data --title "Waypoint city data" --prerelease \
+            --notes "Ready-made city guides and photos for the Waypoint app."
+          for cc in $(echo "$CCS" | python -c "import json,sys; print(' '.join(json.load(sys.stdin)))"); do
+            l=$(echo "$cc" | tr A-Z a-z)
+            ls out | grep -q "^$l-" || continue
+            rm -rf old dist; mkdir -p old
+            gh release download data -p index.json -p "$l.json" -D old --clobber || true
+            python pipeline/pack.py out dist "$cc" old/index.json "old/$l.json"
+            gh release upload data dist/* --clobber
+          done
+      - name: Publish review sheets (this run only; the branch is replaced each time)
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          mkdir rv
+          for d in out/*/; do k=$(basename "$d"); mkdir -p "rv/$k"; cp "$d"/review/sights_00.jpg "$d"/review/food_00.jpg "rv/$k/" 2>/dev/null; cp "$d/city.json" "rv/$k/"; done
+          cd rv && git init -q && git checkout -q -b review && git add -A && \
+            git -c user.name=waypoint-bot -c user.email=bot@users.noreply.github.com commit -qm "Review sheets $(date -u +%F)" && \
+            git push -qf "https://x-access-token:${TOKEN}@github.com/${{ github.repository }}" review
