@@ -241,6 +241,7 @@ SELECT DISTINCT ?article ?coord WHERE {{
 
     city = city_title.replace("_", " ").lower()
     out = []
+    why = DROPPED
     names = sorted(titles)
     for i in range(0, len(names), 50):
         chunk = names[i:i + 50]
@@ -257,13 +258,17 @@ SELECT DISTINCT ?article ?coord WHERE {{
                 continue
             desc = pg.get("description", "")
             if not desc and not MUSEUM.search(title):
+                why.append(f"{title} (no description)")
                 continue
             is_museum = bool(MUSEUM.search(desc) or MUSEUM.search(title))
             if not is_museum and (EXCLUDE.search(desc) or AREA.search(desc)):
+                why.append(f"{title} (desc: {desc})")
                 continue
             if DEFUNCT.search(desc):
+                why.append(f"{title} (defunct: {desc})")
                 continue
             if not is_museum and not_a_place(title, desc):
+                why.append(f"{title} (event: {desc})")
                 continue
             views = sum(v for v in (pg.get("pageviews") or {}).values() if v)
             if views <= 0:
@@ -291,15 +296,15 @@ SELECT DISTINCT ?article ?coord WHERE {{
 # What Wikidata says a place is ("instance of"). Areas, towns, companies, events, paintings and the like have map pins
 # on Wikipedia but aren't places to visit; restaurants with an article are moved to the places to eat.
 BAD_TYPES = set("""Q486972 Q15284 Q2177636 Q23442 Q1637706 Q1549591 Q5119 Q1907114 Q4830453 Q783794 Q43229 Q163740 Q1656682 Q2223653
-Q750215 Q3305213 Q838948 Q4502142 Q3024240 Q1250464 Q3957 Q532 Q123705 Q2983893 Q188509 Q1307214 Q1468524 Q11755880 Q13402009
+Q750215 Q3305213 Q3024240 Q1250464 Q3957 Q532 Q123705 Q2983893 Q188509 Q1307214 Q1468524 Q11755880 Q13402009
 Q483110 Q641226 Q1048835 Q15642541 Q82794 Q7275 Q6256 Q3624078 Q1395032 Q2659904 Q891723 Q6881511 Q167037 Q1058914
 Q13406463 Q4167410 Q18127 Q3918 Q38723 Q9842 Q55488 Q928830
 Q1248784 Q644371 Q1195942 Q15911314 Q43501000""".split())
 RESTAURANT_TYPES = {"Q11707", "Q30022", "Q187456", "Q5307737", "Q1501212"}
 RESTAURANT_DESC = re.compile(r"\b(restaurant|caf[eé]|coffee ?house|brasserie|bistro|bakery|pub|bar|tavern|wine bar)\b", I)
-BAD_DESC = re.compile(r"shooting|\bfirm\b|engineering|consultan|non-?profit|charity|municipality|metropolitan|housing|residential|"
+BAD_DESC = re.compile(r"shooting|\bfirm\b|engineering|consultan|non-?profit|charity|metropolitan area|housing|residential|"
                       r"painting by|oil on canvas|personal union|rocket|spaceflight|space program|record label|software|website|magazine|"
-                      r"podcast|television series|sculpture by [A-Z]?|\bfamily\b|\bpeople\b|person|politician|footballer|singer|band from", I)
+                      r"podcast|television series|politician|footballer|singer|band from", I)
 
 
 def by_type(items):
@@ -311,13 +316,14 @@ def by_type(items):
             cl = e.get("claims", {})
             types[q] = {c["mainsnak"].get("datavalue", {}).get("value", {}).get("id") for c in cl.get("P31", [])}
             # Closed for good: dissolved (P576), officially closed (P3999), or "state of use: closed/demolished" (P5817).
-            if "P576" in cl or "P3999" in cl or any(c["mainsnak"].get("datavalue", {}).get("value", {}).get("id") in ("Q30108381", "Q56556915", "Q811683")
+            if "P3999" in cl or any(c["mainsnak"].get("datavalue", {}).get("value", {}).get("id") in ("Q30108381", "Q56556915", "Q811683")
                                                     for c in cl.get("P5817", [])):
                 closed.add(q)
     keep, food, dropped = [], [], []
+    famous = {x["pageId"] for x in sorted(items, key=lambda x: -x["views"])[:25]}
     for s in items:
         t = types.get(s.get("qid"), set())
-        if s.get("qid") in closed:
+        if s.get("qid") in closed and s["pageId"] not in famous:
             dropped.append(f"{s['title']} (closed)")
         elif t & RESTAURANT_TYPES or (RESTAURANT_DESC.search(s["desc"]) and s["cat"] != "museum"):
             food.append(s)
@@ -327,7 +333,8 @@ def by_type(items):
             dropped.append(f"{s['title']} ({s['desc'][:30]})")
         else:
             keep.append(s)
-    log(f"  left out {len(dropped)}: " + "; ".join(dropped[:40]))
+    log(f"  left out {len(dropped)}: " + "; ".join(dropped))
+    DROPPED.extend(dropped)
     log(f"  restaurants with an article: " + ", ".join(f["title"] for f in food[:15]))
     return keep, food
 
@@ -549,6 +556,8 @@ def article_images(host, titles):
             res[t] = (ftitle(lead) if lead else None, imgs[:40])
     return res
 
+
+DROPPED = []  # places left out and why, written to review/dropped.txt
 
 MAPILLARY = os.environ.get("MAPILLARY_TOKEN", "").strip()
 FLICKR = os.environ.get("FLICKR_KEY", "").strip()
@@ -825,6 +834,32 @@ def gather_sight_candidates(sights, lang, city_name):
     return cands
 
 
+SAVED = []  # (place id, file, CLIP embedding, is one of the place's own article photos)
+
+
+def cross_check(photos, base):
+    """
+    A photo from a category or search that looks more like another place in the city (its article photos) than like
+    its own place is a picture of the neighbour: the Little Mermaid in the background of a Copenhill photo, say.
+    """
+    anchors = {}
+    for pid, fn, e, a in SAVED:
+        if a:
+            anchors.setdefault(pid, []).append(e)
+    gone = 0
+    for pid, fn, e, a in SAVED:
+        if a or pid not in anchors:
+            continue
+        own = max(float(e @ x) for x in anchors[pid])
+        other = max((float(e @ x), q) for q, xs in anchors.items() if q != pid for x in xs) if len(anchors) > 1 else (0, None)
+        if other[0] > 0.8 and other[0] > own + 0.05:
+            photos[pid] = [x for x in photos[pid] if x["file"] != fn]
+            os.remove(os.path.join(base, "photos", fn))
+            gone += 1
+            log(f"    {fn}: looks like {other[1]} ({other[0]:.2f}) more than its own place ({own:.2f}), removed")
+    log(f"  cross-check: {gone} photos of a neighbouring place removed")
+
+
 USED = set()  # photos already given to a place in this city: the same picture isn't shown for two places
 
 
@@ -872,7 +907,8 @@ def choose_photos(judge, place, files_order, cat, maxn, review):
             continue
         embs.append(emb)
         USED.add(k)
-        kept.append((img, {**meta, "score": round(ps, 3), "inside": round(inside, 3), "sim": sim}))
+        kept.append((img, {**meta, "score": round(ps, 3), "inside": round(inside, 3), "sim": sim, "emb": emb,
+                            "anchor": src in ("lead", "wikidata", "wikidata-interior", "local-lead", "article")}))
         time.sleep(0.05)
     if cat == "food" and kept:
         # Outside and inside shots mixed: best outside first, then alternating.
@@ -976,8 +1012,10 @@ def main():
                 fn = f"{pid}_{k}.webp"
                 save_webp(img, os.path.join(base, "photos", fn))
                 photos[pid].append({"file": fn, "page": m["page"], "credit": m["credit"]})
+                SAVED.append((pid, fn, m["emb"], m["anchor"]))
             log(f"  [{i + 1}/{len(sights)}] {s['title']} ({s['cat']}): {len(order)} candidates, kept {len(kept)}")
 
+        cross_check(photos, base)
         food_review = []
         for i, e in enumerate(eats):
             toks = tokens(e["name"])
@@ -1026,6 +1064,8 @@ def main():
         e.pop("tags", None)
     for s in sights:
         s.pop("qid", None)
+    with open(os.path.join(base, "review", "dropped.txt"), "w", encoding="utf-8") as f:
+        f.write("\n".join(DROPPED))
     out = {"key": key, "name": a.city, "country": cc, "centerLat": lat, "centerLng": lng,
            "built": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
            "sights": sights, "eats": eats, "info": info, "photos": photos}

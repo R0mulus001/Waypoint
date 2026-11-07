@@ -126,7 +126,7 @@ jobs:
           TOKEN: ${{ github.token }}
         run: |
           mkdir rv
-          for d in out/*/; do k=$(basename "$d"); mkdir -p "rv/$k"; cp "$d"/review/sights_00.jpg "$d"/review/food_00.jpg "rv/$k/" 2>/dev/null; cp "$d/city.json" "rv/$k/"; done
+          for d in out/*/; do k=$(basename "$d"); mkdir -p "rv/$k"; cp "$d"/review/sights_00.jpg "$d"/review/food_00.jpg "$d"/review/dropped.txt "rv/$k/" 2>/dev/null; cp "$d/city.json" "rv/$k/"; done
           cd rv && git init -q && git checkout -q -b review && git add -A && \
             git -c user.name=waypoint-bot -c user.email=bot@users.noreply.github.com commit -qm "Review sheets $(date -u +%F)" && \
             git push -qf "https://x-access-token:${TOKEN}@github.com/${{ github.repository }}" review
