@@ -1,0 +1,82 @@
+name: Build city data
+on:
+  workflow_dispatch:
+    inputs:
+      country:
+        description: "Country code (DK, AT, ...)"
+        required: true
+      cities:
+        description: "Cities, comma separated (empty = all of the country's cities in europe.json)"
+        required: false
+        default: ""
+permissions:
+  contents: write
+concurrency:
+  group: waypoint-data-${{ inputs.country }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pipeline/requirements.txt
+      - name: Install
+        run: |
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.5.1
+          pip install -r pipeline/requirements.txt
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-clip-vit-b32
+      - name: Build cities
+        env:
+          MAPILLARY_TOKEN: ${{ secrets.MAPILLARY_TOKEN }}
+          FLICKR_KEY: ${{ secrets.FLICKR_KEY }}
+          CC: ${{ inputs.country }}
+          CITIES: ${{ inputs.cities }}
+        run: |
+          python - <<'EOF' > cities.tsv
+          import json, os
+          cc = os.environ["CC"].upper()
+          want = [c.strip().lower() for c in os.environ.get("CITIES", "").split(",") if c.strip()]
+          for co in json.load(open("Waypoint/app/src/main/assets/europe.json")):
+              if co["code"] == cc:
+                  for c in co["cities"]:
+                      if not want or c["name"].lower() in want:
+                          print(c["name"] + "\t" + c["wiki"])
+          EOF
+          cat cities.tsv
+          ok=0
+          while IFS=$'\t' read -r name wiki; do
+            if timeout 100m python pipeline/build_city.py --country "$CC" --city "$name" --wiki "$wiki" --out out; then ok=$((ok+1)); else echo "::warning::$name failed"; fi
+          done < cities.tsv
+          [ "$ok" -gt 0 ]
+      - name: Pack and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CC: ${{ inputs.country }}
+        run: |
+          gh release view data >/dev/null 2>&1 || gh release create data --title "Waypoint city data" --prerelease \
+            --notes "Ready-made city guides and photos for the Waypoint app. Built by the 'Build city data' workflow."
+          mkdir -p old
+          cc=$(echo "$CC" | tr A-Z a-z)
+          gh release download data -p index.json -p "$cc.json" -D old --clobber || true
+          python pipeline/pack.py out dist "$CC" old/index.json "old/$cc.json"
+          gh release upload data dist/* --clobber
+      - name: Publish review sheets
+        if: always()
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          [ -d out ] || exit 0
+          mkdir rv
+          for d in out/*/; do k=$(basename "$d"); [ -d "$d/review" ] && cp -r "$d/review" "rv/$k"; cp "$d/city.json" "rv/$k/" 2>/dev/null || true; done
+          cp -r out/*.log rv/ 2>/dev/null || true
+          cd rv && git init -q && git checkout -q -b review && git add -A && \
+            git -c user.name=waypoint-bot -c user.email=bot@users.noreply.github.com commit -qm "Review sheets $(date -u +%F)" && \
+            git push -qf "https://x-access-token:${TOKEN}@github.com/${{ github.repository }}" review
