@@ -338,6 +338,8 @@ def by_type(items):
             dropped.append(f"{s['title']} (closed)")
         elif t & RESTAURANT_TYPES or (RESTAURANT_DESC.search(s["desc"]) and s["cat"] != "museum"):
             food.append(s)
+        elif "POPULATED" in t and (s.get("soft") or re.search(r"municipal|suburb|\btown\b|district|neighbou?rhood|borough|\bplace in\b|\barea\b", s["desc"], I)):
+            dropped.append(f"{s['title']} (a town or district: {s['desc'][:40]})")
         elif s.get("soft") and s["pageId"] not in famous:
             dropped.append(f"{s['title']} (street or district, not among the best known)")
         elif t & BAD_TYPES and not (t & BAD_TYPES <= soft_types and s["pageId"] in famous):
@@ -640,6 +642,48 @@ def flickr(name, lat, lng, food, maxn=12):
     return out[:maxn]
 
 
+_ov = {"off": False, "n": 0}
+
+
+def openverse(name, city, food, maxn=10):
+    """
+    Openverse (openverse.org): a free search over openly licensed photos, here only the Flickr ones (CC BY, CC BY-SA,
+    CC0, public domain). It has no date taken, so the photo checks reject anything that looks old (black and white,
+    scans, faded prints). The picture's title or tags must name the place.
+    """
+    if _ov["off"]:
+        return []
+    toks = tokens(name)
+    if not toks:
+        return []
+    try:
+        time.sleep(3.2)  # anonymous use: a request every few seconds
+        r = S.get("https://api.openverse.org/v1/images/", timeout=40, params={
+            "q": f"{name} {city}", "license": "by,by-sa,cc0,pdm", "source": "flickr", "page_size": 20, "mature": "false",
+            "extension": "jpg"})
+        if r.status_code == 429:
+            log("    openverse: daily limit reached, no more Openverse photos in this run")
+            _ov["off"] = True
+            return []
+        r.raise_for_status()
+        res = r.json().get("results", [])
+    except Exception as e:
+        log(f"    openverse failed: {e}")
+        return []
+    _ov["n"] += 1
+    out = []
+    for x in res:
+        text = (x.get("title") or "") + " " + " ".join(t.get("name", "") for t in x.get("tags") or [])
+        if not matches(text, toks):
+            continue
+        w, h = x.get("width") or 0, x.get("height") or 0
+        if w and h and (min(w, h) < 500 or not (0.55 <= w / h <= 2.6)):
+            continue
+        lic = f"CC {x.get('license', '').upper()} {x.get('license_version') or ''}".strip()
+        out.append({"url": x["url"], "page": x.get("foreign_landing_url", ""), "credit": f"{x.get('creator') or 'Flickr user'} / {lic}"})
+    return out[:maxn]
+
+
 # ---------- CLIP check ----------
 
 class Judge:
@@ -718,6 +762,17 @@ class Judge:
         best = max(range(len(prompts)), key=lambda i: p[i])
         inside = sum(p[pos.index(x)] for x in self.INSIDE) / max(ps, 1e-6) if cat == "food" else 0.0
         return ps, prompts[best], inside, best < len(pos) and ps >= 0.5
+
+
+def src_old(meta, img, judge):
+    """Openverse photos have no date: reject the ones CLIP thinks look like old photographs or scans."""
+    if meta.get("src") != "openverse":
+        return False
+    emb = judge.image(img)
+    prompts = ["a recent digital photo", "a modern color photograph taken with a smartphone",
+               "an old faded photograph from the 1990s", "a scanned old print", "a vintage film photo", "an old postcard"]
+    p = (100.0 * (judge.text(prompts) @ emb)).softmax(dim=0).tolist()
+    return sum(p[2:]) > 0.5
 
 
 def looks_ok(img):
@@ -902,6 +957,8 @@ def choose_photos(judge, place, files_order, cat, maxn, review):
         if img is None:
             continue
         bad = looks_ok(img)
+        if not bad and src_old(meta, img, judge):
+            bad = "looks like an old photo"
         if bad:
             rejected.append((thumb(img), f"X {bad}"))
             continue
@@ -914,7 +971,7 @@ def choose_photos(judge, place, files_order, cat, maxn, review):
         sim = max((float(emb @ a) for a in anchors), default=None)
         if src in ("lead", "wikidata", "wikidata-interior", "local-lead", "article"):
             anchors.append(emb)
-        elif sim is not None and sim < (0.62 if src == "mapillary" else 0.55):
+        elif sim is not None and sim < (0.62 if src in ("mapillary", "openverse") else 0.55):
             rejected.append((thumb(img), f"X not like the place {sim:.2f}"))
             continue
         if any(float(emb @ e) > 0.93 for e in embs):
@@ -1020,6 +1077,8 @@ def main():
                     order.append((sh["url"], {"src": "mapillary", "page": sh["page"], "credit": sh["credit"]}))
             for fl in flickr(s["title"].split(" (")[0] + " " + a.city, s["lat"], s["lng"], False, 8) if len(order) < 10 else []:
                 order.append((fl["url"], {"src": "flickr", "page": fl["page"], "credit": fl["credit"]}))
+            for ov in openverse(s["title"].split(" (")[0], a.city, False, 8) if len(order) < 8 else []:
+                order.append((ov["url"], {"src": "openverse", "page": ov["page"], "credit": ov["credit"]}))
             place = {"name": s["title"].split(" (")[0], "desc": s["desc"]}
             kept = choose_photos(judge, place, order, s["cat"], maxn, review)
             photos[pid] = []
@@ -1060,6 +1119,8 @@ def main():
                     order.append((mi[f]["url"], {"src": "commons", "page": mi[f]["page"], "credit": mi[f]["credit"]}))
             for fl in flickr(e["name"], e["lat"], e["lng"], True, 8):
                 order.append((fl["url"], {"src": "flickr", "page": fl["page"], "credit": fl["credit"]}))
+            for ov in openverse(e["name"], a.city, True, 10):
+                order.append((ov["url"], {"src": "openverse", "page": ov["page"], "credit": ov["credit"]}))
             for sh in mapillary(e["lat"], e["lng"], True, 1):
                 order.append((sh["url"], {"src": "mapillary", "page": sh["page"], "credit": sh["credit"]}))
             kept = choose_photos(judge, {"name": e["name"], "desc": e["desc"]}, order, "food", 5, food_review)
@@ -1088,6 +1149,7 @@ def main():
         json.dump(out, f, ensure_ascii=False, separators=(",", ":"))
     n = sum(len(v) for v in photos.values())
     size = sum(os.path.getsize(os.path.join(base, "photos", x)) for x in os.listdir(os.path.join(base, "photos")))
+    log(f"  openverse searches: {_ov['n']}")
     log(f"== done {key}: {len(sights)} sights, {len(eats)} places to eat, {n} photos, {size / 1e6:.1f} MB, {time.time() - t0:.0f}s")
 
 
