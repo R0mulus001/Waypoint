@@ -155,8 +155,11 @@ EXCLUDE = re.compile(
     r"basketball|handball|volleyball|rugby|competition|tournament|championship|stock exchange|murder|assassination|killing|"
     r"regicide|\battack\b|bombing|massacre|incident|\bcrash\b|\bfire of\b|riot|scandal|monarchy|kingdom|republic|principality|"
     r"duchy|sovereign state|historical state|former country|country in|union of", I)
-AREA = re.compile(r"^(the )?(capital|city|town|village|municipality|commune|district|borough|neighbou?rhood|quarter|county|region|province|"
-                  r"suburb|parish|street|road|avenue|area|human settlement|locality|administrative)", I)
+AREA = re.compile(r"^(the )?(capital|city|town|village|municipality|commune|borough|county|region|province|"
+                  r"suburb|parish|human settlement|locality|administrative)", I)
+# Streets, squares, canals and districts: kept only when they're among the city's best-known places (Nyhavn, Strøget).
+AREA_SOFT = re.compile(r"^(the )?(district|neighbou?rhood|quarter|street|road|avenue|area|lane|boulevard)", I)
+EVENT_YEAR = re.compile(r"\b(fire|flood|siege|battle|bombing|attack|plague|riots?|earthquake|bombardment)s? of \d{3,4}\b", I)
 CLOSED = re.compile(r"delivery|take ?away|\(closed|fechad|geschlossen|chiuso|ferm[ée]|cerrad|zamkni|uzavřen|stängt|lukket|suljettu", I)
 DEFUNCT = re.compile(r"\b1\d{3}\s*[–-]\s*(1\d{3}|20[01]\d|202[0-5])\b\)?\s*$|\(\s*1\d{3}\s*[–-]\s*(1\d{3}|20[0-2]\d)\s*\)")
 MUSEUM = re.compile(r"museum|gallery|galerie|exhibition|art collection", I)
@@ -261,6 +264,9 @@ SELECT DISTINCT ?article ?coord WHERE {{
                 why.append(f"{title} (no description)")
                 continue
             is_museum = bool(MUSEUM.search(desc) or MUSEUM.search(title))
+            if EVENT_YEAR.search(title):
+                why.append(f"{title} (event)")
+                continue
             if not is_museum and (EXCLUDE.search(desc) or AREA.search(desc)):
                 why.append(f"{title} (desc: {desc})")
                 continue
@@ -277,7 +283,8 @@ SELECT DISTINCT ?article ?coord WHERE {{
             la, lo = titles[asked]
             if km(lat, lng, la, lo) > 9:
                 continue
-            out.append({"pageId": pg["pageid"], "title": title, "lat": la, "lng": lo, "desc": desc, "views": views, "cat": cat,
+            soft = bool(AREA_SOFT.search(desc)) and not is_museum
+            out.append({"soft": soft, "pageId": pg["pageid"], "title": title, "lat": la, "lng": lo, "desc": desc, "views": views, "cat": cat,
                         "out": cat == "park" or bool(OUT.search(desc) or OUT.search(title)),
                         "qid": pg.get("pageprops", {}).get("wikibase_item")})
         log(f"  checked {min(i + 50, len(names))}/{len(names)}")
@@ -315,20 +322,28 @@ def by_type(items):
         for q, e in r.get("entities", {}).items():
             cl = e.get("claims", {})
             types[q] = {c["mainsnak"].get("datavalue", {}).get("value", {}).get("id") for c in cl.get("P31", [])}
+            # Towns, suburbs and districts have a population; sights don't.
+            if "P1082" in cl:
+                types[q].add("POPULATED")
             # Closed for good: dissolved (P576), officially closed (P3999), or "state of use: closed/demolished" (P5817).
             if "P3999" in cl or any(c["mainsnak"].get("datavalue", {}).get("value", {}).get("id") in ("Q30108381", "Q56556915", "Q811683")
                                                     for c in cl.get("P5817", [])):
                 closed.add(q)
     keep, food, dropped = [], [], []
     famous = {x["pageId"] for x in sorted(items, key=lambda x: -x["views"])[:25]}
+    soft_types = {"Q123705", "Q2983893", "POPULATED", "Q188509"}
     for s in items:
         t = types.get(s.get("qid"), set())
         if s.get("qid") in closed and s["pageId"] not in famous:
             dropped.append(f"{s['title']} (closed)")
         elif t & RESTAURANT_TYPES or (RESTAURANT_DESC.search(s["desc"]) and s["cat"] != "museum"):
             food.append(s)
-        elif t & BAD_TYPES:
+        elif s.get("soft") and s["pageId"] not in famous:
+            dropped.append(f"{s['title']} (street or district, not among the best known)")
+        elif t & BAD_TYPES and not (t & BAD_TYPES <= soft_types and s["pageId"] in famous):
             dropped.append(f"{s['title']} (type)")
+        elif "POPULATED" in t and not (s["pageId"] in famous and not re.match(r"(the )?(town|city|suburb|municipality|village|capital|island|commune)", s["desc"], I)):
+            dropped.append(f"{s['title']} (has a population: a town or district)")
         elif BAD_DESC.search(s["desc"]) and s["cat"] != "museum":
             dropped.append(f"{s['title']} ({s['desc'][:30]})")
         else:
@@ -852,7 +867,7 @@ def cross_check(photos, base):
             continue
         own = max(float(e @ x) for x in anchors[pid])
         other = max((float(e @ x), q) for q, xs in anchors.items() if q != pid for x in xs) if len(anchors) > 1 else (0, None)
-        if other[0] > 0.8 and other[0] > own + 0.05:
+        if other[0] > 0.83 and other[0] > own + 0.08:
             photos[pid] = [x for x in photos[pid] if x["file"] != fn]
             os.remove(os.path.join(base, "photos", fn))
             gone += 1
