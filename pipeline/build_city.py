@@ -77,6 +77,9 @@ def wapi(host, **params):
         time.sleep(gap)
     _last_api[0] = time.time()
     params = {"format": "json", "formatversion": "2", **params}
+    # Long lists of file names (Cyrillic ones especially) don't fit in a URL: those go as a POST, which the API accepts.
+    if sum(len(str(v)) for v in params.values()) > 1500:
+        return post(f"https://{host}/w/api.php", params)
     return get(f"https://{host}/w/api.php", params=params)
 
 
