@@ -223,7 +223,7 @@ SELECT DISTINCT ?article ?coord WHERE {{
   ?item wdt:P31 ?cls .
   VALUES ?cls {{ wd:Q33506 wd:Q207694 wd:Q1007870 wd:Q17431399 wd:Q2087181 wd:Q588140 wd:Q1970365 wd:Q636400 wd:Q22698 wd:Q1107656
     wd:Q167346 wd:Q43501 wd:Q2416723 wd:Q570116 wd:Q16560 wd:Q23413 wd:Q16970 wd:Q2977 wd:Q4989906 wd:Q12280 wd:Q174782 wd:Q1440300
-    wd:Q24398318 wd:Q12518 wd:Q15243209 wd:Q1076486 wd:Q53060 wd:Q3305213 wd:Q24354 wd:Q153562 wd:Q1329623 wd:Q811979 wd:Q839954 }}
+    wd:Q24398318 wd:Q12518 wd:Q15243209 wd:Q1076486 wd:Q53060 wd:Q24354 wd:Q153562 wd:Q1329623 wd:Q811979 wd:Q839954 }}
   ?article schema:about ?item ; schema:isPartOf <https://en.wikipedia.org/> .
 }}"""
     try:
@@ -276,13 +276,60 @@ SELECT DISTINCT ?article ?coord WHERE {{
                         "out": cat == "park" or bool(OUT.search(desc) or OUT.search(title)),
                         "qid": pg.get("pageprops", {}).get("wikibase_item")})
         log(f"  checked {min(i + 50, len(names))}/{len(names)}")
+    # One entry per article (a redirect and its target are the same place).
+    out = list({s["pageId"]: s for s in out}.values())
+    out, restaurants = by_type(out)
     out.sort(key=lambda s: -s["views"])
     out = dedupe(out)
     # Enough of each kind: the best-known sights, and museums and parks of their own (they have fewer views).
     pick = [s for s in out if s["cat"] == "sight"][:40] + [s for s in out if s["cat"] == "museum"][:14] + [s for s in out if s["cat"] == "park"][:10]
     pick.sort(key=lambda s: -s["views"])
     log(f"  sights: {sum(s['cat'] == 'sight' for s in pick)}, museums: {sum(s['cat'] == 'museum' for s in pick)}, parks: {sum(s['cat'] == 'park' for s in pick)}")
-    return pick
+    return pick, restaurants
+
+
+# What Wikidata says a place is ("instance of"). Areas, towns, companies, events, paintings and the like have map pins
+# on Wikipedia but aren't places to visit; restaurants with an article are moved to the places to eat.
+BAD_TYPES = set("""Q486972 Q15284 Q2177636 Q23442 Q1637706 Q1549591 Q5119 Q1907114 Q4830453 Q783794 Q43229 Q163740 Q1656682 Q2223653
+Q750215 Q3305213 Q838948 Q4502142 Q3024240 Q1250464 Q3957 Q532 Q123705 Q2983893 Q188509 Q1307214 Q1468524 Q11755880 Q13402009
+Q483110 Q641226 Q1048835 Q15642541 Q82794 Q7275 Q6256 Q3624078 Q1395032 Q2659904 Q891723 Q6881511 Q167037 Q1058914
+Q13406463 Q4167410 Q18127 Q3918 Q38723 Q9842 Q55488 Q928830
+Q1248784 Q644371 Q1195942 Q15911314 Q43501000""".split())
+RESTAURANT_TYPES = {"Q11707", "Q30022", "Q187456", "Q5307737", "Q1501212"}
+RESTAURANT_DESC = re.compile(r"\b(restaurant|caf[eé]|coffee ?house|brasserie|bistro|bakery|pub|bar|tavern|wine bar)\b", I)
+BAD_DESC = re.compile(r"shooting|\bfirm\b|engineering|consultan|non-?profit|charity|municipality|metropolitan|housing|residential|"
+                      r"painting by|oil on canvas|personal union|rocket|spaceflight|space program|record label|software|website|magazine|"
+                      r"podcast|television series|sculpture by [A-Z]?|\bfamily\b|\bpeople\b|person|politician|footballer|singer|band from", I)
+
+
+def by_type(items):
+    qids = [s["qid"] for s in items if s.get("qid")]
+    types, closed = {}, set()
+    for i in range(0, len(qids), 50):
+        r = wapi("www.wikidata.org", action="wbgetentities", props="claims", ids="|".join(qids[i:i + 50]))
+        for q, e in r.get("entities", {}).items():
+            cl = e.get("claims", {})
+            types[q] = {c["mainsnak"].get("datavalue", {}).get("value", {}).get("id") for c in cl.get("P31", [])}
+            # Closed for good: dissolved (P576), officially closed (P3999), or "state of use: closed/demolished" (P5817).
+            if "P576" in cl or "P3999" in cl or any(c["mainsnak"].get("datavalue", {}).get("value", {}).get("id") in ("Q30108381", "Q56556915", "Q811683")
+                                                    for c in cl.get("P5817", [])):
+                closed.add(q)
+    keep, food, dropped = [], [], []
+    for s in items:
+        t = types.get(s.get("qid"), set())
+        if s.get("qid") in closed:
+            dropped.append(f"{s['title']} (closed)")
+        elif t & RESTAURANT_TYPES or (RESTAURANT_DESC.search(s["desc"]) and s["cat"] != "museum"):
+            food.append(s)
+        elif t & BAD_TYPES:
+            dropped.append(f"{s['title']} (type)")
+        elif BAD_DESC.search(s["desc"]) and s["cat"] != "museum":
+            dropped.append(f"{s['title']} ({s['desc'][:30]})")
+        else:
+            keep.append(s)
+    log(f"  left out {len(dropped)}: " + "; ".join(dropped[:40]))
+    log(f"  restaurants with an article: " + ", ".join(f["title"] for f in food[:15]))
+    return keep, food
 
 
 # ---------- places to eat ----------
@@ -510,12 +557,12 @@ FLICKR = os.environ.get("FLICKR_KEY", "").strip()
 def mapillary(lat, lng, food, maxn):
     if not MAPILLARY:
         return []
-    d = 0.0007
+    d = 0.0003 if food else 0.0006
     dl = d / math.cos(math.radians(lat))
     since = f"{MIN_YEAR}-01-01T00:00:00Z"
     try:
         r = get("https://graph.mapillary.com/images", params={
-            "access_token": MAPILLARY, "limit": 100, "start_captured_at": since,
+            "access_token": MAPILLARY, "limit": 500, "start_captured_at": since,
             "fields": "id,thumb_2048_url,captured_at,compass_angle,computed_compass_angle,computed_geometry,geometry,is_pano",
             "bbox": f"{lng - dl:.6f},{lat - d:.6f},{lng + dl:.6f},{lat + d:.6f}"})
     except Exception as e:
@@ -529,13 +576,13 @@ def mapillary(lat, lng, food, maxn):
         if not g:
             continue
         dist = km(g[1], g[0], lat, lng) * 1000
-        if dist < 6 or dist > (30 if food else 60):
+        if dist < 5 or dist > (20 if food else 60):
             continue
         hd = o.get("computed_compass_angle", o.get("compass_angle"))
         if hd is None:
             continue
         off = abs(((bearing(g[1], g[0], lat, lng) - hd) % 360 + 540) % 360 - 180)
-        if off > 25:
+        if off > (15 if food else 25):
             continue
         shots.append({"url": o["thumb_2048_url"], "lat": g[1], "lng": g[0], "t": o.get("captured_at", 0), "dist": dist,
                       "page": f"https://www.mapillary.com/app/?pKey={o['id']}", "credit": "Mapillary / CC BY-SA 4.0"})
@@ -572,25 +619,37 @@ def flickr(name, lat, lng, food, maxn=12):
 # ---------- CLIP check ----------
 
 class Judge:
-    """CLIP (OpenAI ViT-B/32): says how much a picture looks like a photo of the place vs. people, maps, paintings..."""
+    """
+    CLIP (OpenAI ViT-B/32) looks at every candidate photo:
+      - what it shows: the place (building, interior, park...) or something else (people, a bus, a sign, a map, food...).
+        The single best-matching description must be one of the place's, and those must add up to at least half.
+      - whether it's the same place: photos from a category, a search or the street must look like the place's own
+        photos from its Wikipedia article and Wikidata (the "anchors"), so a famous neighbour doesn't sneak in.
+    """
 
     NEG = ["a portrait photo of a person", "a photo of a group of people posing", "a selfie", "a photo of a person giving a speech",
-           "a photo of a crowd at a concert or event", "a map", "a floor plan or diagram", "a painting", "a drawing or illustration",
-           "a scan of a document or text", "a logo or graphic", "a close-up photo of food on a plate", "a photo of a car",
-           "an old black and white photograph", "a screenshot", "a close-up photo of a small object", "a photo of a sports match",
-           "a photo of a book cover", "a photo of a dog or cat", "a blurry photo"]
+           "a photo of a crowd at a concert or event", "a photo of runners in a race on a street", "a photo of people in a demonstration",
+           "a map", "a satellite image", "a floor plan or diagram", "a painting", "a drawing or illustration", "a scan of a document or text",
+           "a photo of a sign with text", "a photo of an information board", "a logo or graphic", "a close-up photo of food on a plate",
+           "a photo of drinks in glasses", "a photo of a chef cooking", "a photo of a bus on a road", "a photo of a truck or van",
+           "a photo of a car", "a photo of a tram or train", "an old black and white photograph", "an old stereoscopic photograph",
+           "a screenshot", "a close-up photo of a small object", "a photo of a sports match", "a photo of a book cover",
+           "a photo of a dog or cat", "a blurry photo", "a photo of an empty road", "a photo of a construction site",
+           "a photo of a warship", "a photo of a commemorative plaque"]
     POS = {
         "sight": ["a photo of a famous landmark", "a photo of a historic building", "a photo of a church interior", "a photo of a palace",
                   "a photo of a castle", "a photo of a city square", "a photo of a monument in a city", "a photo of a bridge over water",
-                  "a photo of a tower", "a photo of a harbour with boats", "a photo of a street with old buildings", "a photo of a statue in a city"],
+                  "a photo of a tower", "a photo of a harbour with old houses", "a photo of a pedestrian street with old buildings",
+                  "a photo of a statue", "a photo of an ornate palace interior", "a photo of a modern building", "a photo of a fountain"],
         "museum": ["a photo of a museum building", "a photo of a museum exhibition hall", "a photo of artworks displayed in a museum gallery",
-                   "a photo of a historic building", "a photo of a museum interior with visitors walking", "a photo of exhibits in glass cases"],
+                   "a photo of a historic building", "a photo of exhibits in glass cases", "a photo of sculptures in a museum hall",
+                   "a photo of a modern museum building"],
         "park": ["a photo of a park with trees and paths", "a photo of a garden with flowers", "a photo of a lake in a park",
-                 "a scenic view over a city", "a photo of an amusement park", "a photo of a zoo", "a photo of a green lawn with trees",
-                 "a photo of a palace garden", "a photo of a beach"],
+                 "a scenic view over a city", "a photo of an amusement park", "a photo of a zoo with animals", "a photo of a green lawn with trees",
+                 "a photo of a palace garden", "a photo of a beach", "a photo of a waterfront promenade", "a photo of a roller coaster"],
         "food": ["a photo of a restaurant storefront on a street", "a photo of a restaurant interior with tables", "a photo of a café interior",
                  "a photo of a bar interior", "a photo of a café terrace with tables outside", "a photo of a shop front on a street",
-                 "a photo of a building facade"],
+                 "a photo of a building facade with a sign"],
     }
     INSIDE = ["a photo of a restaurant interior with tables", "a photo of a café interior", "a photo of a bar interior"]
 
@@ -618,19 +677,37 @@ class Judge:
             return (e / e.norm(dim=-1, keepdim=True))[0]
 
     def score(self, emb, cat, name, desc):
-        pos = list(self.POS[cat]) + [f"a photo of {name}"]
+        """-> (share of the place's descriptions, best description, part 'inside' for places to eat, ok)."""
+        pos = list(self.POS[cat])
         neg = list(self.NEG)
-        if re.search(r"statue|sculpture|mermaid|monument", name + " " + desc, I):
+        text = name + " " + desc
+        if re.search(r"statue|sculpture|mermaid|monument|memorial", text, I):
             neg = [n for n in neg if "small object" not in n]
+        if re.search(r"ship|frigate|naval|boat|vessel", text, I):
+            neg = [n for n in neg if "warship" not in n]
+            pos.append("a photo of a museum ship")
+        if re.search(r"amager bakke|copenhill|power|incinerat", text, I):
+            pos.append("a photo of an industrial building with a ski slope")
         prompts = pos + neg
-        logits = 100.0 * (self.text(prompts) @ emb)
-        p = logits.softmax(dim=0).tolist()
+        p = (100.0 * (self.text(prompts) @ emb)).softmax(dim=0).tolist()
         ps = sum(p[:len(pos)])
-        worst = max(range(len(neg)), key=lambda i: p[len(pos) + i])
-        inside = 0.0
-        if cat == "food":
-            inside = sum(p[pos.index(x)] for x in self.INSIDE) / max(ps, 1e-6)
-        return ps, neg[worst], inside
+        best = max(range(len(prompts)), key=lambda i: p[i])
+        inside = sum(p[pos.index(x)] for x in self.INSIDE) / max(ps, 1e-6) if cat == "food" else 0.0
+        return ps, prompts[best], inside, best < len(pos) and ps >= 0.5
+
+
+def looks_ok(img):
+    """Too dark to see anything, or black and white (old photos, scans): not wanted."""
+    small = img.resize((64, 64))
+    hsv = small.convert("HSV")
+    px = list(hsv.getdata())
+    v = sum(x[2] for x in px) / len(px)
+    sat = sum(x[1] for x in px) / len(px)
+    if v < 38:
+        return "too dark"
+    if sat < 14:
+        return "black and white"
+    return None
 
 
 def thumb(img):
@@ -648,7 +725,7 @@ def fetch_image(url):
     return img
 
 
-def save_webp(img, path, long_side=1280, q=72):
+def save_webp(img, path, long_side=1080, q=66):
     w, h = img.size
     s = long_side / max(w, h)
     if s < 1:
@@ -748,13 +825,24 @@ def gather_sight_candidates(sights, lang, city_name):
     return cands
 
 
-def choose_photos(judge, place, files_order, extra, cat, maxn, review):
-    """files_order: [(url, meta)] already filtered by metadata. Returns kept [(img, meta)]."""
-    kept, embs, rejected = [], [], []
+USED = set()  # photos already given to a place in this city: the same picture isn't shown for two places
+
+
+def photo_key(url):
+    f = url.split("?")[0].rsplit("/", 1)[-1]
+    return re.sub(r"^\d+px-", "", f).lower()
+
+
+def choose_photos(judge, place, files_order, cat, maxn, review):
+    """files_order: [(url, meta)] already filtered by metadata, best sources first. Returns kept [(img, meta)]."""
+    kept, embs, rejected, anchors = [], [], [], []
     tried = 0
     for url, meta in files_order:
-        if len(kept) >= maxn or tried >= maxn * 3 + 6:
+        if len(kept) >= maxn or tried >= maxn * 3 + 8:
             break
+        k = photo_key(url)
+        if k in USED:
+            continue
         tried += 1
         try:
             img = fetch_image(url)
@@ -763,17 +851,29 @@ def choose_photos(judge, place, files_order, extra, cat, maxn, review):
             continue
         if img is None:
             continue
+        bad = looks_ok(img)
+        if bad:
+            rejected.append((thumb(img), f"X {bad}"))
+            continue
         emb = judge.image(img)
-        ps, worst, inside = judge.score(emb, cat, place["name"], place.get("desc", ""))
-        if ps < 0.5:
-            rejected.append((thumb(img), f"X {worst[2:18]} {ps:.2f}"))
+        ps, best, inside, ok = judge.score(emb, cat, place["name"], place.get("desc", ""))
+        if not ok:
+            rejected.append((thumb(img), f"X {best[2:20].replace('photo of ', '')} {ps:.2f}"))
+            continue
+        src = meta["src"]
+        sim = max((float(emb @ a) for a in anchors), default=None)
+        if src in ("lead", "wikidata", "wikidata-interior", "local-lead", "article"):
+            anchors.append(emb)
+        elif sim is not None and sim < (0.62 if src == "mapillary" else 0.55):
+            rejected.append((thumb(img), f"X not like the place {sim:.2f}"))
             continue
         if any(float(emb @ e) > 0.93 for e in embs):
             rejected.append((thumb(img), "X duplicate"))
             continue
         embs.append(emb)
-        kept.append((img, {**meta, "score": round(ps, 3), "inside": round(inside, 3)}))
-        time.sleep(0.1)
+        USED.add(k)
+        kept.append((img, {**meta, "score": round(ps, 3), "inside": round(inside, 3), "sim": sim}))
+        time.sleep(0.05)
     if cat == "food" and kept:
         # Outside and inside shots mixed: best outside first, then alternating.
         ins = [k for k in kept if k[1]["inside"] >= 0.5]
@@ -785,7 +885,9 @@ def choose_photos(judge, place, files_order, extra, cat, maxn, review):
             if ins:
                 mixed.append(ins.pop(0))
         kept = mixed
-    review.append((place["name"], [(thumb(k[0]), f"{k[1]['src']} {k[1]['score']:.2f}") for k in kept] + rejected[:max(0, 10 - len(kept))]))
+    def cap(m):
+        return f"{m['src']} {m['score']:.2f}" + (f" ~{m['sim']:.2f}" if m.get("sim") is not None else "")
+    review.append((place["name"], [(thumb(k[0]), cap(k[1])) for k in kept] + rejected[:max(0, 10 - len(kept))]))
     return kept
 
 
@@ -809,8 +911,22 @@ def main():
     log(f"== {a.city} ({cc}) -> {key}")
     lat, lng = locate(a.city, a.wiki, cc)
     log(f"  centre {lat:.5f},{lng:.5f}")
-    sights = find_sights(lat, lng, a.wiki or a.city)
+    sights, wiki_food = find_sights(lat, lng, a.wiki or a.city)
     eats = find_food(lat, lng)
+    # Restaurants with a Wikipedia article (often famous ones) join the places to eat, first in line.
+    have = {e["name"].lower() for e in eats}
+    extra = []
+    for r in wiki_food[:8]:
+        n = r["title"].split(" (")[0]
+        if n.lower() in have:
+            for e in eats:
+                if e["name"].lower() == n.lower() and r.get("qid"):
+                    e["tags"]["wikidata"] = r["qid"]
+            continue
+        kind = "coffee" if re.search(r"caf[eé]|coffee|bakery", r["desc"], I) else ("drinks" if re.search(r"\bbar\b|pub|tavern", r["desc"], I) else "food")
+        extra.append({"id": "w%d" % r["pageId"], "name": n, "lat": r["lat"], "lng": r["lng"], "kind": kind,
+                      "desc": r["desc"][:1].upper() + r["desc"][1:] + ".", "score": 50, "tags": {"wikidata": r["qid"]} if r.get("qid") else {}})
+    eats = extra + eats
     info = texts(sights)
     log(f"  texts: {len(info)}")
 
@@ -854,7 +970,7 @@ def main():
             for fl in flickr(s["title"].split(" (")[0] + " " + a.city, s["lat"], s["lng"], False, 8) if len(order) < 10 else []:
                 order.append((fl["url"], {"src": "flickr", "page": fl["page"], "credit": fl["credit"]}))
             place = {"name": s["title"].split(" (")[0], "desc": s["desc"]}
-            kept = choose_photos(judge, place, order, None, s["cat"], maxn, review)
+            kept = choose_photos(judge, place, order, s["cat"], maxn, review)
             photos[pid] = []
             for k, (img, m) in enumerate(kept):
                 fn = f"{pid}_{k}.webp"
@@ -891,13 +1007,13 @@ def main():
                     order.append((mi[f]["url"], {"src": "commons", "page": mi[f]["page"], "credit": mi[f]["credit"]}))
             for fl in flickr(e["name"], e["lat"], e["lng"], True, 8):
                 order.append((fl["url"], {"src": "flickr", "page": fl["page"], "credit": fl["credit"]}))
-            for sh in mapillary(e["lat"], e["lng"], True, 3):
+            for sh in mapillary(e["lat"], e["lng"], True, 1):
                 order.append((sh["url"], {"src": "mapillary", "page": sh["page"], "credit": sh["credit"]}))
-            kept = choose_photos(judge, {"name": e["name"], "desc": e["desc"]}, order, None, "food", 5, food_review)
+            kept = choose_photos(judge, {"name": e["name"], "desc": e["desc"]}, order, "food", 5, food_review)
             photos[e["id"]] = []
             for k, (img, m) in enumerate(kept):
                 fn = f"{e['id']}_{k}.webp"
-                save_webp(img, os.path.join(base, "photos", fn), long_side=1280)
+                save_webp(img, os.path.join(base, "photos", fn))
                 photos[e["id"]].append({"file": fn, "page": m["page"], "credit": m["credit"]})
             log(f"  [{i + 1}/{len(eats)}] {e['name']} ({e['kind']}): {len(order)} candidates, kept {len(kept)}")
 
