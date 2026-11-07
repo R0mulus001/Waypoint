@@ -155,10 +155,10 @@ EXCLUDE = re.compile(
     r"basketball|handball|volleyball|rugby|competition|tournament|championship|stock exchange|murder|assassination|killing|"
     r"regicide|\battack\b|bombing|massacre|incident|\bcrash\b|\bfire of\b|riot|scandal|monarchy|kingdom|republic|principality|"
     r"duchy|sovereign state|historical state|former country|country in|union of", I)
-AREA = re.compile(r"^(the )?(capital|city|town|village|municipality|commune|borough|county|region|province|"
-                  r"suburb|parish|human settlement|locality|administrative)", I)
+AREA = re.compile(r"^(the )?(capital|city|town|village|municipality|commune|borough|county|region|province|district|neighbou?rhood|quarter|"
+                  r"suburb|parish|human settlement|locality|administrative|place in|amusement ride|roller coaster|ride in)", I)
 # Streets, squares, canals and districts: kept only when they're among the city's best-known places (Nyhavn, Strøget).
-AREA_SOFT = re.compile(r"^(the )?(district|neighbou?rhood|quarter|street|road|avenue|area|lane|boulevard)", I)
+AREA_SOFT = re.compile(r"^(the )?(street|road|avenue|area|lane|boulevard)", I)
 EVENT_YEAR = re.compile(r"\b(fire|flood|siege|battle|bombing|attack|plague|riots?|earthquake|bombardment)s? of \d{3,4}\b", I)
 CLOSED = re.compile(r"delivery|take ?away|\(closed|fechad|geschlossen|chiuso|ferm[ée]|cerrad|zamkni|uzavřen|stängt|lukket|suljettu", I)
 DEFUNCT = re.compile(r"\b1\d{3}\s*[–-]\s*(1\d{3}|20[01]\d|202[0-5])\b\)?\s*$|\(\s*1\d{3}\s*[–-]\s*(1\d{3}|20[0-2]\d)\s*\)")
