@@ -11,8 +11,13 @@ on:
         description: "Skip cities that are already published"
         type: boolean
         default: true
+      then:
+        description: "Next batches to run after this one, separated by ';' (e.g. IT,ES;PT,RO)"
+        required: false
+        default: ""
 permissions:
   contents: write
+  actions: write
 jobs:
   plan:
     runs-on: ubuntu-latest
@@ -130,3 +135,12 @@ jobs:
           cd rv && git init -q && git checkout -q -b review && git add -A && \
             git -c user.name=waypoint-bot -c user.email=bot@users.noreply.github.com commit -qm "Review sheets $(date -u +%F)" && \
             git push -qf "https://x-access-token:${TOKEN}@github.com/${{ github.repository }}" review
+      - name: Start the next batch
+        if: always() && inputs.then != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          THEN: ${{ inputs.then }}
+          SKIP: ${{ inputs.skip_ready }}
+        run: |
+          next="${THEN%%;*}"; rest=""; [ "$next" != "$THEN" ] && rest="${THEN#*;}"
+          gh workflow run data-europe.yml -R "${{ github.repository }}" -f countries="$next" -f skip_ready="$SKIP" -f then="$rest"
