@@ -1,0 +1,42 @@
+name: Repack city data from earlier runs
+# Publishes cities already built by earlier 'Build city data (many countries)' runs (their artifacts are kept 3 days),
+# without building them again.
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: "Run ids, comma separated"
+        required: true
+permissions:
+  contents: write
+  actions: read
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Download the built cities
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUNS: ${{ inputs.runs }}
+        run: |
+          mkdir -p art
+          for r in ${RUNS//,/ }; do gh run download "$r" -R "${{ github.repository }}" -p 'city-*' -D art || echo "::warning::run $r: download failed"; done
+          mkdir -p out
+          for d in art/city-*; do [ -f "$d/city.json" ] && mv "$d" "out/${d#art/city-}"; done
+          ls out | wc -l
+      - name: Pack and publish each country
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for cc in $(ls out | cut -d- -f1 | sort -u); do
+            CC=$(echo "$cc" | tr a-z A-Z)
+            rm -rf old dist; mkdir -p old
+            gh release download data -p index.json -p "$cc.json" -D old --clobber || true
+            python pipeline/pack.py out dist "$CC" old/index.json "old/$cc.json" || { echo "::warning::packing $CC failed"; continue; }
+            gh release upload data dist/* --clobber || echo "::warning::uploading $CC failed"
+          done

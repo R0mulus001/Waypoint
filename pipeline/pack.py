@@ -36,10 +36,11 @@ for key in sorted(os.listdir(out)):
     d = os.path.join(out, key)
     c = json.load(open(os.path.join(d, "city.json"), encoding="utf-8"))
     zname = f"{key}.zip"
-    files = sorted(os.listdir(os.path.join(d, "photos")))
+    pd = os.path.join(d, "photos")
+    files = sorted(os.listdir(pd)) if os.path.isdir(pd) else []  # a city with no photos has no folder in the artifact
     with zipfile.ZipFile(os.path.join(dist, zname), "w", zipfile.ZIP_STORED) as z:
         for f in files:
-            z.write(os.path.join(d, "photos", f), f)
+            z.write(os.path.join(pd, f), f)
     c["photoPack"] = {"file": zname, "bytes": os.path.getsize(os.path.join(dist, zname)), "count": len(files), "version": c["built"]}
     cities[key] = c
     print(f"{key}: {len(files)} photos, {c['photoPack']['bytes'] / 1e6:.1f} MB")

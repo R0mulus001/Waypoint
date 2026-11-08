@@ -123,8 +123,8 @@ jobs:
             ls out | grep -q "^$l-" || continue
             rm -rf old dist; mkdir -p old
             gh release download data -p index.json -p "$l.json" -D old --clobber || true
-            python pipeline/pack.py out dist "$cc" old/index.json "old/$l.json"
-            gh release upload data dist/* --clobber
+            python pipeline/pack.py out dist "$cc" old/index.json "old/$l.json" || { echo "::warning::packing $cc failed"; continue; }
+            gh release upload data dist/* --clobber || echo "::warning::uploading $cc failed"
           done
       - name: Publish review sheets (this run only; the branch is replaced each time)
         env:
