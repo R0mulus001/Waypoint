@@ -159,7 +159,7 @@ EXCLUDE = re.compile(
     r"regicide|\battack\b|bombing|massacre|incident|\bcrash\b|\bfire of\b|riot|scandal|monarchy|kingdom|republic|principality|"
     r"duchy|sovereign state|historical state|former country|country in|union of", I)
 AREA = re.compile(r"^(the )?(capital|city|town|village|municipality|commune|borough|county|region|province|district|neighbou?rhood|quarter|"
-                  r"suburb|parish|human settlement|locality|administrative|place in|amusement ride|roller coaster|ride in)", I)
+                  r"suburb|parish|human settlement|locality|administrative|place in|(sub)?prefecture|amusement ride|roller coaster|ride in)", I)
 # Streets, squares, canals and districts: kept only when they're among the city's best-known places (Nyhavn, Strøget).
 AREA_SOFT = re.compile(r"^(the )?(street|road|avenue|area|lane|boulevard)", I)
 EVENT_ANY = re.compile(r"\b(fire|derailment|shooting|bombing|massacre|explosion|collapse|disaster|stampede|assassination|"
@@ -263,7 +263,7 @@ SELECT DISTINCT ?article ?coord WHERE {{
             if "disambiguation" in pg.get("pageprops", {}):
                 continue
             title = pg["title"]
-            if title.lower() == city or title.startswith("List of"):
+            if title.lower() == city or title.startswith("List of") or re.search(r"\((photograph|painting|film|novel|song|album|book|play|opera|sculpture by)", title, I):
                 continue
             desc = pg.get("description", "")
             if not desc and not MUSEUM.search(title):
@@ -276,7 +276,8 @@ SELECT DISTINCT ?article ?coord WHERE {{
             if not is_museum and (EXCLUDE.search(desc) or AREA.search(desc)):
                 why.append(f"{title} (desc: {desc})")
                 continue
-            if DEFUNCT.search(desc):
+            # "1890–1975" at the end means it existed then; "built 1163–1345" is when it was built.
+            if DEFUNCT.search(desc) and not re.search(r"\b(built|constructed|erected|founded|completed|designed|rebuilt|from)\b[^,;]*$", desc, I):
                 why.append(f"{title} (defunct: {desc})")
                 continue
             if not is_museum and not_a_place(title, desc):
