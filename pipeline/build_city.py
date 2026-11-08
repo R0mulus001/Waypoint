@@ -277,7 +277,10 @@ SELECT DISTINCT ?article ?coord WHERE {{
                 why.append(f"{title} (desc: {desc})")
                 continue
             # "1890–1975" at the end means it existed then; "built 1163–1345" is when it was built.
-            if DEFUNCT.search(desc) and not re.search(r"\b(built|constructed|erected|founded|completed|designed|rebuilt|from)\b[^,;]*$", desc, I):
+            # For buildings, years in brackets are when they were built ("Church in Vienna (1720–1737)").
+            if DEFUNCT.search(desc) and not re.search(r"\b(built|constructed|erected|founded|completed|designed|rebuilt|from)\b[^,;]*$", desc, I) \
+                    and not re.search(r"church|cathedral|basilica|chapel|palace|castle|tower|bridge|monastery|abbey|building|house|hall|"
+                                      r"theat(re|er)|synagogue|mosque|fortress|gate|monument|statue|fountain|villa|mansion|column", desc, I):
                 why.append(f"{title} (defunct: {desc})")
                 continue
             if not is_museum and not_a_place(title, desc):
