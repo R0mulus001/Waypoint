@@ -19,24 +19,20 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install requests
-      - name: Download the built cities
+      - name: Pack and publish, one country at a time (the photos of all cities don't fit on the disk at once)
         env:
           GH_TOKEN: ${{ github.token }}
           RUNS: ${{ inputs.runs }}
         run: |
-          mkdir -p art
-          for r in ${RUNS//,/ }; do gh run download "$r" -R "${{ github.repository }}" -p 'city-*' -D art || echo "::warning::run $r: download failed"; done
-          mkdir -p out
-          for d in art/city-*; do [ -f "$d/city.json" ] && mv "$d" "out/${d#art/city-}"; done
-          ls out | wc -l
-      - name: Pack and publish each country
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          for cc in $(ls out | cut -d- -f1 | sort -u); do
-            CC=$(echo "$cc" | tr a-z A-Z)
-            rm -rf old dist; mkdir -p old
-            gh release download data -p index.json -p "$cc.json" -D old --clobber || true
-            python pipeline/pack.py out dist "$CC" old/index.json "old/$cc.json" || { echo "::warning::packing $CC failed"; continue; }
-            gh release upload data dist/* --clobber || echo "::warning::uploading $CC failed"
+          for r in ${RUNS//,/ }; do
+            ccs=$(gh api --paginate "repos/${{ github.repository }}/actions/runs/$r/artifacts?per_page=100" --jq '.artifacts[].name' | sed -n 's/^city-\([a-z]*\)-.*/\1/p' | sort -u)
+            for cc in $ccs; do
+              CC=$(echo "$cc" | tr a-z A-Z)
+              rm -rf art out old dist; mkdir -p art out old
+              gh run download "$r" -R "${{ github.repository }}" -p "city-$cc-*" -D art || { echo "::warning::$CC download failed"; continue; }
+              for d in art/city-*; do [ -f "$d/city.json" ] && mv "$d" "out/${d#art/city-}"; done
+              gh release download data -p index.json -p "$cc.json" -D old --clobber || true
+              python pipeline/pack.py out dist "$CC" old/index.json "old/$cc.json" || { echo "::warning::packing $CC failed"; continue; }
+              gh release upload data dist/* --clobber || echo "::warning::uploading $CC failed"
+            done
           done
