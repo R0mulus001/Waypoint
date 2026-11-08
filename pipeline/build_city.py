@@ -162,6 +162,9 @@ AREA = re.compile(r"^(the )?(capital|city|town|village|municipality|commune|boro
                   r"suburb|parish|human settlement|locality|administrative|place in|amusement ride|roller coaster|ride in)", I)
 # Streets, squares, canals and districts: kept only when they're among the city's best-known places (Nyhavn, Strøget).
 AREA_SOFT = re.compile(r"^(the )?(street|road|avenue|area|lane|boulevard)", I)
+EVENT_ANY = re.compile(r"\b(fire|derailment|shooting|bombing|massacre|explosion|collapse|disaster|stampede|assassination|"
+                       r"murders?|hijacking|crash|accident|attacks?|riots?|siege|bombardment|uprising|insurrection|coup|flood|earthquake)\b"
+                       r"(?! (station|tower|brigade|service|museum|house|temple|hall))", I)
 EVENT_YEAR = re.compile(r"\b(fire|flood|siege|battle|bombing|attack|plague|riots?|earthquake|bombardment)s? of \d{3,4}\b", I)
 CLOSED = re.compile(r"delivery|take ?away|\(closed|fechad|geschlossen|chiuso|ferm[ée]|cerrad|zamkni|uzavřen|stängt|lukket|suljettu", I)
 DEFUNCT = re.compile(r"\b1\d{3}\s*[–-]\s*(1\d{3}|20[01]\d|202[0-5])\b\)?\s*$|\(\s*1\d{3}\s*[–-]\s*(1\d{3}|20[0-2]\d)\s*\)")
@@ -267,7 +270,7 @@ SELECT DISTINCT ?article ?coord WHERE {{
                 why.append(f"{title} (no description)")
                 continue
             is_museum = bool(MUSEUM.search(desc) or MUSEUM.search(title))
-            if EVENT_YEAR.search(title):
+            if EVENT_YEAR.search(title) or (EVENT_ANY.search(title.split(" (")[0]) and not is_museum):
                 why.append(f"{title} (event)")
                 continue
             if not is_museum and (EXCLUDE.search(desc) or AREA.search(desc)):
@@ -309,17 +312,18 @@ BAD_TYPES = set("""Q486972 Q15284 Q2177636 Q23442 Q1637706 Q1549591 Q5119 Q19071
 Q750215 Q3305213 Q3024240 Q1250464 Q3957 Q532 Q123705 Q2983893 Q188509 Q1307214 Q1468524 Q11755880 Q13402009
 Q483110 Q641226 Q1048835 Q15642541 Q82794 Q7275 Q6256 Q3624078 Q1395032 Q2659904 Q891723 Q6881511 Q167037 Q1058914
 Q13406463 Q4167410 Q18127 Q3918 Q38723 Q9842 Q55488 Q928830
-Q1248784 Q644371 Q1195942 Q15911314 Q43501000""".split())
+Q1248784 Q644371 Q3661311 Q431289 Q167270 Q1190554 Q3839081 Q168983 Q8065 Q1078765 Q2252077 Q1371150 Q1195942 Q15911314 Q43501000""".split())
 RESTAURANT_TYPES = {"Q11707", "Q30022", "Q187456", "Q5307737", "Q1501212"}
 RESTAURANT_DESC = re.compile(r"\b(restaurant|caf[eé]|coffee ?house|brasserie|bistro|bakery|pub|bar|tavern|wine bar)\b", I)
 BAD_DESC = re.compile(r"shooting|\bfirm\b|engineering|consultan|non-?profit|charity|metropolitan area|housing|residential|"
                       r"painting by|oil on canvas|personal union|rocket|spaceflight|space program|record label|software|website|magazine|"
-                      r"podcast|television series|politician|footballer|singer|band from", I)
+                      r"podcast|television series|politician|footballer|singer|band from|fashion house|luxury (goods|brand)|\bbrand\b|retail(er| chain)|"
+                      r"manufacturer|multinational|conglomerate|airline|demolished|destroyed in|no longer exists|former (fortress|prison|castle)", I)
 
 
 def by_type(items):
     qids = [s["qid"] for s in items if s.get("qid")]
-    types, closed = {}, set()
+    types, closed, demolished = {}, set(), set()
     for i in range(0, len(qids), 50):
         r = wapi("www.wikidata.org", action="wbgetentities", props="claims", ids="|".join(qids[i:i + 50]))
         for q, e in r.get("entities", {}).items():
@@ -329,6 +333,10 @@ def by_type(items):
             if "P1082" in cl:
                 types[q].add("POPULATED")
             # Closed for good: dissolved (P576), officially closed (P3999), or "state of use: closed/demolished" (P5817).
+            p576 = [c["mainsnak"].get("datavalue", {}).get("value", {}).get("time", "") for c in cl.get("P576", [])]
+            gone_long_ago = any(re.match(r"[+-]?(\d{1,4})-", t) and int(re.match(r"[+-]?(\d{1,4})-", t).group(1)) < 2000 for t in p576 if t)
+            if gone_long_ago:
+                demolished.add(q)
             if "P3999" in cl or any(c["mainsnak"].get("datavalue", {}).get("value", {}).get("id") in ("Q30108381", "Q56556915", "Q811683")
                                                     for c in cl.get("P5817", [])):
                 closed.add(q)
@@ -337,7 +345,9 @@ def by_type(items):
     soft_types = {"Q123705", "Q2983893", "POPULATED", "Q188509"}
     for s in items:
         t = types.get(s.get("qid"), set())
-        if s.get("qid") in closed and s["pageId"] not in famous:
+        if s.get("qid") in demolished and not s["cat"] == "museum":
+            dropped.append(f"{s['title']} (demolished or dissolved before 2000)")
+        elif s.get("qid") in closed and s["pageId"] not in famous:
             dropped.append(f"{s['title']} (closed)")
         elif t & RESTAURANT_TYPES or (RESTAURANT_DESC.search(s["desc"]) and s["cat"] != "museum"):
             food.append(s)
