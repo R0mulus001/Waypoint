@@ -1,0 +1,16 @@
+name: Rebuild data index
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  index:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir c && gh release download data -p '??.json' -D c
+          python3 pipeline/reindex.py c index.json
+          gh release upload data index.json --clobber
