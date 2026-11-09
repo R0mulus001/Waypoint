@@ -351,7 +351,8 @@ RESTAURANT_DESC = re.compile(r"\b(restaurant|caf[eé]|coffee ?house|brasserie|bi
 BAD_DESC = re.compile(r"shooting|\bfirm\b|engineering|consultan|non-?profit|charity|metropolitan area|housing|residential|"
                       r"painting by|oil on canvas|personal union|rocket|spaceflight|space program|record label|software|website|magazine|"
                       r"podcast|television series|politician|footballer|singer|band from|fashion house|luxury (goods|brand)|\bbrand\b|retail(er| chain)|"
-                      r"manufacturer|multinational|conglomerate|airline|demolished|destroyed in|no longer exists|former (fortress|prison|castle)", I)
+                      r"manufacturer|multinational|conglomerate|airline|religious order|prelature|^crown\b|regalia|"
+                      r"demolished|destroyed in|no longer exists|former (fortress|prison|castle)", I)
 
 
 def by_type(items):
@@ -390,6 +391,9 @@ def by_type(items):
             dropped.append(f"{s['title']} (a town or district: {s['desc'][:40]})")
         elif s.get("soft") and s["pageId"] not in famous:
             dropped.append(f"{s['title']} (street or district, not among the best known)")
+        elif t & {"Q483110", "Q641226", "Q1076486"} and not re.search(r"ancient|roman|amphithe|historic|medieval", s["desc"], I) \
+                and s["pageId"] not in famous:
+            dropped.append(f"{s['title']} (stadium or arena)")
         elif t & BAD_TYPES and not (t & BAD_TYPES <= soft_types and s["pageId"] in famous):
             dropped.append(f"{s['title']} (type)")
         elif "POPULATED" in t and not (s["pageId"] in famous and not re.match(r"(the )?(town|city|suburb|municipality|village|capital|island|commune)", s["desc"], I)):
