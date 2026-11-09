@@ -182,6 +182,31 @@ imperial royal saint state city central great grand former museo palais palazzo 
 muzeul palatul parcul strada plaza iglesia eglise musee place kirke slot slott torv have""".split())
 
 
+# What a place is, from the start of its description ("Indoor arena in Vienna" -> "indoor arena"). These aren't sights.
+HEAD_DENY = re.compile(r"^(the )?(former |historic(al)? |ancient )?(river|tributary|stream|creek|civil parish|curazia|hamlet|settlement|"
+    r"sub-?municipality|part|comune|frazione|canton|rural locality|local council|arrondissement|ward|community|intermunicipal.*|"
+    r"diplomatic mission|embassy|high commission|(multi-purpose |indoor |indoor sporting |indoor ice hockey |ice hockey )?arena|"
+    r"multi-purpose (venue|arena|indoor arena)|sport(s)? venue|stadium|cricket ground|swimming venue|tennis venue|motorsport track|"
+    r"street circuit|horse racing venue|ski jumping hill|velodrome|high-rise( building)?|skyscraper|commercial( offices)?|office( building)?|"
+    r"headquarters|business park|industrial estate|tram stop|tram network|rail line|railway line|bus station|public broadcaster|"
+    r"(lower|upper) house|unicameral parliament|legislature|seat|mountain range|series|section|monetary authority|central bank|"
+    r"naval base|military base|airfield|airport|aerodrome|general aviation aerodrome|subdivision|statistical region|historical (region|province)|"
+    r"region|province|voivodeship|gmina|stadtteil|urban district|urban neighbou?rhood|barony|m[ée]tropole|institution|educational institution|"
+    r"vocational education institution|recording studio|hostel|hotel|shipyard|archive|national archives|legal deposit.*|tunnel|road tunnel|"
+    r"dam|reservoir|nazi ghetto|ghetto|religious order|lay religious order|personal prelature|jurisdiction|crown|regalia|manuscript|"
+    r"glacier|geologic formation|sinkhole|tributary|water treatment.*|power station|incinerator|prison|court|courthouse|school|university)$", I)
+# Kinds that can still be a landmark when they're among the city's best-known places (Royal Liver Building, a famous dam).
+SOFT_HEAD = re.compile(r"^(the )?(former |historic(al)? )?(high-rise( building)?|skyscraper|commercial( offices)?|office( building)?|headquarters|seat|"
+                       r"dam|rail line|railway line|tunnel|arena|stadium|cricket ground|(lower|upper) house|unicameral parliament|legislature|"
+                       r"river|reservoir|glacier|mountain range|court|courthouse|university|crown|regalia|manuscript|ski jumping hill)$", I)
+EVENT_DESC = re.compile(r"hijacking|invasion|human crush|stampede|mutiny|\bsunk\b|massacre|shipwreck|air ?crash|\bpogrom\b|"
+                        r"\bdisaster\b|\bderailment\b|\bterrorist\b|\bassassinat", I)
+
+
+def head(desc):
+    return re.split(r"\s+(?:in|of|on|at|near|by|for|from|built|located|and|serving|between|within|outside)\s+|,|\(", desc, maxsplit=1)[0].strip()
+
+
 def not_a_place(title, desc=""):
     return bool(EVENT_T.search(title.replace("_", " ")) or EVENT_D.search(desc))
 
@@ -270,6 +295,10 @@ SELECT DISTINCT ?article ?coord WHERE {{
                 why.append(f"{title} (no description)")
                 continue
             is_museum = bool(MUSEUM.search(desc) or MUSEUM.search(title))
+            if not is_museum and EVENT_DESC.search(desc):
+                why.append(f"{title} (event: {desc[:40]})")
+                continue
+            deny = head(desc) if not is_museum and HEAD_DENY.match(head(desc)) else None
             if EVENT_YEAR.search(title) or (EVENT_ANY.search(title.split(" (")[0]) and not is_museum):
                 why.append(f"{title} (event)")
                 continue
@@ -294,7 +323,7 @@ SELECT DISTINCT ?article ?coord WHERE {{
             if km(lat, lng, la, lo) > 9:
                 continue
             soft = bool(AREA_SOFT.search(desc)) and not is_museum
-            out.append({"soft": soft, "pageId": pg["pageid"], "title": title, "lat": la, "lng": lo, "desc": desc, "views": views, "cat": cat,
+            out.append({"deny": deny, "soft": soft, "pageId": pg["pageid"], "title": title, "lat": la, "lng": lo, "desc": desc, "views": views, "cat": cat,
                         "out": cat == "park" or bool(OUT.search(desc) or OUT.search(title)),
                         "qid": pg.get("pageprops", {}).get("wikibase_item")})
         log(f"  checked {min(i + 50, len(names))}/{len(names)}")
@@ -314,7 +343,7 @@ SELECT DISTINCT ?article ?coord WHERE {{
 # on Wikipedia but aren't places to visit; restaurants with an article are moved to the places to eat.
 BAD_TYPES = set("""Q486972 Q15284 Q2177636 Q23442 Q1637706 Q1549591 Q5119 Q1907114 Q4830453 Q783794 Q43229 Q163740 Q1656682 Q2223653
 Q750215 Q3305213 Q3024240 Q1250464 Q3957 Q532 Q123705 Q2983893 Q188509 Q1307214 Q1468524 Q11755880 Q13402009
-Q483110 Q641226 Q1048835 Q15642541 Q82794 Q7275 Q6256 Q3624078 Q1395032 Q2659904 Q891723 Q6881511 Q167037 Q1058914
+Q1048835 Q15642541 Q82794 Q7275 Q6256 Q3624078 Q1395032 Q2659904 Q891723 Q6881511 Q167037 Q1058914
 Q13406463 Q4167410 Q18127 Q3918 Q38723 Q9842 Q55488 Q928830
 Q1248784 Q644371 Q3661311 Q431289 Q167270 Q1190554 Q3839081 Q168983 Q8065 Q1078765 Q2252077 Q1371150 Q1195942 Q15911314 Q43501000""".split())
 RESTAURANT_TYPES = {"Q11707", "Q30022", "Q187456", "Q5307737", "Q1501212"}
@@ -349,7 +378,9 @@ def by_type(items):
     soft_types = {"Q123705", "Q2983893", "POPULATED", "Q188509"}
     for s in items:
         t = types.get(s.get("qid"), set())
-        if s.get("qid") in demolished and not s["cat"] == "museum":
+        if s.get("deny") and not (s["pageId"] in famous and SOFT_HEAD.match(s["deny"])):
+            dropped.append(f"{s['title']} (kind: {s['deny']})")
+        elif s.get("qid") in demolished and not s["cat"] == "museum":
             dropped.append(f"{s['title']} (demolished or dissolved before 2000)")
         elif s.get("qid") in closed and s["pageId"] not in famous:
             dropped.append(f"{s['title']} (closed)")
@@ -1156,7 +1187,8 @@ def main():
     for e in eats:
         e.pop("tags", None)
     for s in sights:
-        s.pop("qid", None)
+        for k in ("qid", "deny", "soft"):
+            s.pop(k, None)
     with open(os.path.join(base, "review", "dropped.txt"), "w", encoding="utf-8") as f:
         f.write("\n".join(DROPPED))
     out = {"key": key, "name": a.city, "country": cc, "centerLat": lat, "centerLng": lng,
